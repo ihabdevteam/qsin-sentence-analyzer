@@ -78,7 +78,7 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
                 st.warning("데이터 분포를 확인해주세요. 신뢰도 있는 분석을 위해서는 최소 3개 이상의 다양한 SNR 레벨에 대한 데이터가 필요합니다.")
 
             # --- 4. 시각화 ---
-            st.header("4. 심리음향학적 기능 곡선")
+            st.header("4. Psychometric Function Curve")
             model = result.get('model')
             snr50_val = result.get('snr_50')
             plot_data = result.get('plot_data') # 평균 정답률 데이터
@@ -131,7 +131,7 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
                     legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                
+
     except Exception as e:
         st.error(f"데이터를 처리하는 중 오류가 발생했습니다: {e}")
         st.info("간헐적인 네트워크 오류일 수 있습니다. 아래 버튼을 눌러 캐시를 초기화하고 다시 시도해 보세요.")
