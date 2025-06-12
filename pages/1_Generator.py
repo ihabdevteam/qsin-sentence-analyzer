@@ -7,7 +7,7 @@ from modules.db_utils import init_supabase_client, get_profiles, get_patients
 
 st.set_page_config(page_title="리포트 생성기", layout="wide")
 st.title("Quick-SIN 테스트 리포트 생성기 📝")
-st.write("담당자와 환자를 선택하고 리포트 정보를 입력하면, 360개의 `score_qsin` 데이터를 자동으로 생성하여 데이터베이스에 원자적으로 삽입합니다.")
+st.write("담당자와 환자를 선택하고 리포트 정보를 입력하면, 360개의 `score_qsin` 데이터를 자동으로 생성하여 데이터베이스에 삽입합니다.")
 
 # --- 클라이언트 및 데이터 로딩 ---
 supabase = init_supabase_client()

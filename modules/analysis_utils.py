@@ -68,7 +68,7 @@ def get_data_for_sentence(_supabase_client, sentence_id: int, use_dummy_prefix: 
 def estimate_snr50_for_sentence(data: pd.DataFrame):
     """
     단일 문장에 대한 데이터(snr_level, correct_rate)를 받아
-    로지스틱 회귀분석으로 SNR-50과 기울기를 추정합니다.
+    로지스틱 회귀 분석으로 SNR-50과 기울기를 추정합니다.
     """
     agg_data = data.groupby('snr_level')['correct_rate'].mean().reset_index()
 
