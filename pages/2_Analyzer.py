@@ -38,8 +38,7 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
 
     if processed_data.empty:
         st.error(f"문장 {sentence_id_to_analyze}번에 대한 분석을 진행할 수 없습니다. 데이터가 없거나 유효한 SNR 레벨이 연결되지 않았습니다.")
-    else:
-        st.subheader("Step 1: 데이터베이스에서 조회 및 전처리된 데이터")
+    else:        
         st.info("선택한 문장에 대해 데이터베이스에서 조회하고 정답률을 계산한 결과입니다. 이 데이터를 기반으로 분석을 시작합니다.")
 
         full_sentence_text = processed_data['full_sentence'].iloc[0]
@@ -52,8 +51,6 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
         st.header("3. 분석 결과")
         with st.spinner("로지스틱 회귀 모델을 학습하고 SNR-50을 추정합니다..."):
             result = estimate_snr50_for_sentence(processed_data)
-
-        st.subheader(f"Step 2: 문장 {sentence_id_to_analyze}번 최종 분석 결과")
 
         status = result.get('status')
         if status == 'Success':
