@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from modules.db_utils import init_supabase_client
-from modules.analysis_utils import get_data_for_sentence, estimate_snr50_for_sentence
+from modules.analysis_utils import get_data_for_sentence, get_all_sentence_data, estimate_snr50_for_sentence
 
 st.set_page_config(page_title="점수 분석", layout="wide")
 st.title("Quick-SIN 개별 문장 분석 페이지 (SNR-50 추정) 📊")
@@ -13,6 +13,32 @@ st.write("분석하고 싶은 문장 번호를 입력하고 분석을 실행하�
 supabase = init_supabase_client()
 if not supabase:
     st.stop()
+
+st.header("0. 전체 원본 데이터 다운로드")
+download_use_dummy = st.checkbox(
+    "dummy_ 접두사가 붙은 데이터만 다운로드",
+    value=True,
+    key='download_dummy_check',
+    help="체크 시 session_id가 'dummy_'로 시작하는 데이터만 다운로드합니다. 체크 해제 시 그 외의 데이터를 다운로드합니다."
+)
+
+# 다운로드 버튼을 누르면 데이터를 조회하고, st.download_button을 즉시 생성합니다.
+if st.button("📥 전체 데이터 조회 및 다운로드 준비"):
+    with st.spinner("전체 데이터를 DB에서 조회 중입니다..."):
+        all_data_df = get_all_sentence_data(supabase, use_dummy_prefix=download_use_dummy)
+        if not all_data_df.empty:
+            st.success(f"총 {len(all_data_df)}개의 레코드를 성공적으로 조회했습니다. 아래 버튼을 눌러 저장하세요.")
+            csv_data = all_data_df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="다운로드 준비 완료. 클릭하여 저장 (CSV)",
+                data=csv_data,
+                file_name="all_qsin_scores.csv",
+                mime="text/csv",
+            )
+        else:
+            st.warning("다운로드할 데이터가 없습니다.")
+
+st.divider()
 
 # --- 1. 분석할 문장 및 데이터 소스 선택 ---
 st.header("1. 분석 대상 선택")
@@ -30,9 +56,7 @@ use_dummy_data = st.checkbox(
 )
 
 if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행"):
-
     try:
-
         # --- 2. 데이터 로드 및 중간 결과 표시 (디버깅) ---
         st.header("2. 데이터 처리 과정 확인")
         with st.spinner(f"DB에서 문장 {sentence_id_to_analyze}번의 데이터를 로드하고 전처리 중입니다..."):
@@ -46,10 +70,16 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
             full_sentence_text = processed_data['full_sentence'].iloc[0]
             st.markdown(f"**분석 대상 문장: \"{full_sentence_text}\"**")
 
-            display_df = processed_data.drop(columns=['full_sentence', 'sentence_id'])
+            display_df = processed_data.drop(columns=['session_id', 'full_sentence', 'sentence_id'])
             st.dataframe(display_df)
 
-            # --- 3. SNR-50 추정 및 결과 표시 ---
+            csv_data = processed_data.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 이 문장 데이터 다운로드 (CSV)",
+                data=csv_data,
+                file_name=f"sentence_{sentence_id_to_analyze}_data.csv",
+                mime="text/csv",
+            )
             st.header("3. 분석 결과")
             with st.spinner("로지스틱 회귀 모델을 학습하고 SNR-50을 추정합니다..."):
                 result = estimate_snr50_for_sentence(processed_data)
