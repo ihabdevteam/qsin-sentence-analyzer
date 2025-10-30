@@ -18,11 +18,13 @@ supabase = init_supabase_client()
 if not supabase:
     st.stop()
 
-# --- 세션 상태 초기화: 데이터 유지용 ---
-if 'all_data_df' not in st.session_state:
-    st.session_state.all_data_df = None
+# --- 세션 상태 초기화: 분석 결과 및 메타데이터만 유지 (메모리 최적화) ---
 if 'analysis_results_df' not in st.session_state:
     st.session_state.analysis_results_df = None
+if 'data_snr_range' not in st.session_state:
+    st.session_state.data_snr_range = None
+if 'temp_download_data' not in st.session_state:
+    st.session_state.temp_download_data = None
 
 st.header("0. 전체 원본 데이터 다운로드")
 download_use_dummy = st.checkbox(
@@ -37,25 +39,43 @@ if st.button("📥 전체 데이터 조회 및 다운로드 준비"):
     with st.spinner("전체 데이터를 DB에서 조회 중입니다..."):
         all_data_df = get_all_sentence_data(supabase, use_dummy_prefix=download_use_dummy)
         if not all_data_df.empty:
-            st.session_state.all_data_df = all_data_df
+            # SNR 범위 저장 (그래프용)
+            st.session_state.data_snr_range = (
+                all_data_df['snr_level'].min(),
+                all_data_df['snr_level'].max()
+            )
+            
             with st.spinner("전체 문장에 대한 SNR-50 분석을 실행 중입니다..."):
                 st.session_state.analysis_results_df = analyze_all_sentences(all_data_df)
+            
+            # 다운로드용 CSV 데이터를 임시로 저장 (다운로드 후 자동 삭제)
+            st.session_state.temp_download_data = all_data_df.to_csv(index=False).encode('utf-8-sig')
+            
             st.success("데이터를 조회하고 분석하여 세션에 저장했습니다. 아래에서 계속 확인할 수 있습니다.")
         else:
-            st.session_state.all_data_df = None
             st.session_state.analysis_results_df = None
+            st.session_state.data_snr_range = None
+            st.session_state.temp_download_data = None
             st.warning("다운로드할 데이터가 없습니다.")
 
-# --- 조회/분석 결과 표시 (세션 유지) ---
-if st.session_state.all_data_df is not None and not st.session_state.all_data_df.empty:
-    all_data_df = st.session_state.all_data_df
-    analysis_results_df = st.session_state.analysis_results_df
+# 데이터 초기화 버튼
+cols_reset = st.columns([1, 1, 6])
+with cols_reset[0]:
+    if st.button("🧹 데이터 초기화"):
+        st.session_state.analysis_results_df = None
+        st.session_state.data_snr_range = None
+        st.session_state.temp_download_data = None
+        st.rerun()
 
-    st.success(f"총 {len(all_data_df)}개의 레코드를 성공적으로 조회했습니다. 아래 버튼을 눌러 저장하세요.")
-    csv_data = all_data_df.to_csv(index=False).encode('utf-8-sig')
+# --- 조회/분석 결과 표시 (세션 유지) ---
+if st.session_state.temp_download_data is not None:
+    analysis_results_df = st.session_state.analysis_results_df
+    
+    # 다운로드 버튼
+    st.success("데이터 조회 완료! 아래 버튼을 눌러 CSV 파일을 저장하세요.")
     st.download_button(
         label="다운로드 준비 완료. 클릭하여 저장 (CSV)",
-        data=csv_data,
+        data=st.session_state.temp_download_data,
         file_name="all_qsin_scores.csv",
         mime="text/csv",
     )
@@ -143,12 +163,12 @@ if st.session_state.all_data_df is not None and not st.session_state.all_data_df
             st.info("시각화할 문장이 없습니다.")
         else:
             fig = create_combined_psychometric_plot(
-                all_data_df,
-                selected_sentence_ids,
+                sentence_ids=selected_sentence_ids,
                 include_logistic=True,
                 include_mean=False,
                 show_legend=False,
                 precomputed_results=analysis_results_df,
+                snr_range=st.session_state.data_snr_range,
             )
             if fig:
                 st.plotly_chart(fig, use_container_width=True)

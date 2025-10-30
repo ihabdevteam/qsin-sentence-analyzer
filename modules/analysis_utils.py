@@ -325,31 +325,30 @@ def create_psychometric_plot(processed_data, result, sentence_id=None, title_suf
     return fig
 
 def create_combined_psychometric_plot(
-    processed_data: pd.DataFrame,
     sentence_ids: list[int],
     include_logistic: bool = True,
     include_mean: bool = False,
     show_legend: bool = False,
     precomputed_results: pd.DataFrame | None = None,
+    snr_range: tuple[float, float] = (-10, 10),
 ):
     """
     여러 문장(sentence_id)의 심리물리 곡선을 하나의 Figure에 겹쳐서 표시합니다.
 
-    - processed_data: get_all_sentence_data()로 전처리된 데이터프레임
     - sentence_ids: 겹쳐서 표시할 문장 ID 목록
     - include_logistic: 각 문장에 대해 로지스틱 회귀 곡선을 함께 표시할지 여부
+    - precomputed_results: 사전 계산된 분석 결과 (snr_50, slope, validity 포함)
+    - snr_range: SNR 데이터 범위 (min, max)
     """
-    if processed_data.empty or not sentence_ids:
+    if not sentence_ids:
         st.warning("시각화할 데이터가 없습니다.")
         return None
 
     fig = go.Figure()
 
-    # 전역 x 구간 설정 (선택된 문장의 snr_level 범위 기준)
-    sel = processed_data[processed_data['sentence_id'].isin(sentence_ids)]
-    global_min = sel['snr_level'].min()
-    global_max = sel['snr_level'].max()
-    x_range_global = np.linspace(global_min - 5, global_max + 5, 100) if pd.notna(global_min) and pd.notna(global_max) else np.linspace(-10, 20, 100)
+    # 전역 x 구간 설정
+    global_min, global_max = snr_range
+    x_range_global = np.linspace(global_min - 5, global_max + 5, 100)
 
     # 표(사전 계산) 결과를 빠르게 찾기 위한 맵 구성
     results_map = {}
@@ -365,27 +364,8 @@ def create_combined_psychometric_plot(
                 'validity': row.get('validity', 'Good'),
             }
 
-    # 선택한 문장마다 평균 정답률 라인 추가 + 선택 시 로지스틱 곡선 추가
+    # 선택한 문장마다 로지스틱 곡선 추가
     for sid in sentence_ids:
-        sent_df = processed_data[processed_data['sentence_id'] == sid]
-        if sent_df.empty:
-            continue
-
-        agg = sent_df.groupby('snr_level')['correct_rate'].mean().reset_index()
-
-        # 평균 정답률 라인 (옵션)
-        if include_mean:
-            fig.add_trace(go.Scatter(
-                x=agg['snr_level'],
-                y=agg['correct_rate'],
-                mode='lines+markers',
-                name=f"문장 {sid} 평균",
-                marker=dict(size=6),
-                line=dict(width=1),
-                opacity=0.5,
-                showlegend=show_legend
-            ))
-
         if include_logistic:
             # 표의 snr_50, slope를 그대로 사용해 로지스틱 곡선을 복원 (재학습 없음)
             r = results_map.get(sid)
@@ -481,5 +461,8 @@ def create_combined_psychometric_plot(
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
         hovermode='closest'
     )
-
+    
+    # WebGL 렌더링 활성화 (대량 데이터 성능 최적화)
+    fig.update_traces(line=dict(width=1.5), selector=dict(mode='lines'))
+    
     return fig
