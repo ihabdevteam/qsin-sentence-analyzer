@@ -25,6 +25,8 @@ if 'data_snr_range' not in st.session_state:
     st.session_state.data_snr_range = None
 if 'temp_download_data' not in st.session_state:
     st.session_state.temp_download_data = None
+if 'total_data_rows' not in st.session_state:
+    st.session_state.total_data_rows = None
 
 st.header("0. 전체 원본 데이터 다운로드")
 download_use_dummy = st.checkbox(
@@ -39,6 +41,9 @@ if st.button("📥 전체 데이터 조회 및 다운로드 준비"):
     with st.spinner("전체 데이터를 DB에서 조회 중입니다..."):
         all_data_df = get_all_sentence_data(supabase, use_dummy_prefix=download_use_dummy)
         if not all_data_df.empty:
+            # 총 데이터 row 수 저장
+            st.session_state.total_data_rows = len(all_data_df)
+            
             # SNR 범위 저장 (그래프용)
             st.session_state.data_snr_range = (
                 all_data_df['snr_level'].min(),
@@ -56,6 +61,7 @@ if st.button("📥 전체 데이터 조회 및 다운로드 준비"):
             st.session_state.analysis_results_df = None
             st.session_state.data_snr_range = None
             st.session_state.temp_download_data = None
+            st.session_state.total_data_rows = None
             st.warning("다운로드할 데이터가 없습니다.")
 
 # 데이터 초기화 버튼
@@ -65,6 +71,7 @@ with cols_reset[0]:
         st.session_state.analysis_results_df = None
         st.session_state.data_snr_range = None
         st.session_state.temp_download_data = None
+        st.session_state.total_data_rows = None
         st.rerun()
 
 # --- 조회/분석 결과 표시 (세션 유지) ---
@@ -87,11 +94,11 @@ if st.session_state.temp_download_data is not None:
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("분석된 문장 수", len(analysis_results_df))
+            st.metric("총 데이터 행 수", f"{st.session_state.total_data_rows:,}")
         with col2:
-            st.metric("평균 SNR-50", f"{analysis_results_df['snr_50'].mean():.2f} dB")
+            st.metric("분석된 문장 수", len(analysis_results_df))
         with col3:
-            st.metric("평균 기울기", f"{analysis_results_df['slope'].mean():.2f} %/dB")
+            st.metric("평균 SNR-50", f"{analysis_results_df['snr_50'].mean():.2f} dB")
         with col4:
             # Validity 등급별 카운트
             ideal_count = len(analysis_results_df[analysis_results_df['validity'] == 'Ideal'])
