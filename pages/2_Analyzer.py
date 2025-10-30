@@ -1,23 +1,33 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
 from modules.db_utils import init_supabase_client
-from modules.analysis_utils import get_data_for_sentence, get_all_sentence_data, estimate_snr50_for_sentence
+from modules.analysis_utils import (    
+    get_all_sentence_data, 
+    estimate_snr50_for_sentence,
+    analyze_all_sentences,
+    display_analysis_metrics,
+    create_psychometric_plot,
+    create_combined_psychometric_plot
+)
 
 st.set_page_config(page_title="점수 분석", layout="wide")
 st.title("Quick-SIN 개별 문장 분석 페이지 (SNR-50 추정) 📊")
-st.write("분석하고 싶은 문장 번호를 입력하고 분석을 실행하세요.")
 
 # --- 클라이언트 초기화 ---
 supabase = init_supabase_client()
 if not supabase:
     st.stop()
 
+# --- 세션 상태 초기화: 데이터 유지용 ---
+if 'all_data_df' not in st.session_state:
+    st.session_state.all_data_df = None
+if 'analysis_results_df' not in st.session_state:
+    st.session_state.analysis_results_df = None
+
 st.header("0. 전체 원본 데이터 다운로드")
 download_use_dummy = st.checkbox(
-    "dummy_ 접두사가 붙은 데이터만 다운로드",
-    value=True,
+    "테스트 데이터(dummy_ 접두사) 다운로드",
+    value=False,
     key='download_dummy_check',
     help="체크 시 session_id가 'dummy_'로 시작하는 데이터만 다운로드합니다. 체크 해제 시 그 외의 데이터를 다운로드합니다."
 )
@@ -27,16 +37,123 @@ if st.button("📥 전체 데이터 조회 및 다운로드 준비"):
     with st.spinner("전체 데이터를 DB에서 조회 중입니다..."):
         all_data_df = get_all_sentence_data(supabase, use_dummy_prefix=download_use_dummy)
         if not all_data_df.empty:
-            st.success(f"총 {len(all_data_df)}개의 레코드를 성공적으로 조회했습니다. 아래 버튼을 눌러 저장하세요.")
-            csv_data = all_data_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="다운로드 준비 완료. 클릭하여 저장 (CSV)",
-                data=csv_data,
-                file_name="all_qsin_scores.csv",
-                mime="text/csv",
-            )
+            st.session_state.all_data_df = all_data_df
+            with st.spinner("전체 문장에 대한 SNR-50 분석을 실행 중입니다..."):
+                st.session_state.analysis_results_df = analyze_all_sentences(all_data_df)
+            st.success("데이터를 조회하고 분석하여 세션에 저장했습니다. 아래에서 계속 확인할 수 있습니다.")
         else:
+            st.session_state.all_data_df = None
+            st.session_state.analysis_results_df = None
             st.warning("다운로드할 데이터가 없습니다.")
+
+# --- 조회/분석 결과 표시 (세션 유지) ---
+if st.session_state.all_data_df is not None and not st.session_state.all_data_df.empty:
+    all_data_df = st.session_state.all_data_df
+    analysis_results_df = st.session_state.analysis_results_df
+
+    st.success(f"총 {len(all_data_df)}개의 레코드를 성공적으로 조회했습니다. 아래 버튼을 눌러 저장하세요.")
+    csv_data = all_data_df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        label="다운로드 준비 완료. 클릭하여 저장 (CSV)",
+        data=csv_data,
+        file_name="all_qsin_scores.csv",
+        mime="text/csv",
+    )
+
+    # 전체 데이터 분석 결과 표시
+    st.header("전체 데이터 분석 결과")
+    if analysis_results_df is not None and not analysis_results_df.empty:
+        st.success(f"총 {len(analysis_results_df)}개 문장에 대한 분석이 완료되었습니다.")
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("분석된 문장 수", len(analysis_results_df))
+        with col2:
+            st.metric("평균 SNR-50", f"{analysis_results_df['snr_50'].mean():.2f} dB")
+        with col3:
+            st.metric("평균 기울기", f"{analysis_results_df['slope'].mean():.2f} %/dB")
+        with col4:
+            # Validity 등급별 카운트
+            ideal_count = len(analysis_results_df[analysis_results_df['validity'] == 'Ideal'])
+            st.metric("Ideal 등급 문장 수", ideal_count)
+
+        st.subheader("문장별 분석 결과")
+        display_df = analysis_results_df.copy()
+        display_df['snr_50'] = display_df['snr_50'].round(2)
+        display_df['slope'] = display_df['slope'].round(2)
+        if 'total_score_sum' in display_df.columns:
+            display_df['total_score_sum'] = display_df['total_score_sum'].round(0)
+        if 'avg_score' in display_df.columns:
+            display_df['avg_score'] = display_df['avg_score'].round(2)
+        
+        st.dataframe(
+            display_df,
+            column_config={
+                "sentence_id": "문장 ID",
+                "full_sentence": st.column_config.TextColumn("문장", width="large"),
+                "snr_50": "SNR-50 (dB)",
+                "slope": "기울기 (%/dB)",
+                "validity": "등급",
+                "total_score_sum": "총 점수",
+                "avg_score": "평균 점수",
+                "data_points": "데이터 수",
+                "snr_levels": "SNR 레벨 수"
+            },
+            use_container_width=True
+        )
+
+        analysis_csv = analysis_results_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📊 분석 결과 다운로드 (CSV)",
+            data=analysis_csv,
+            file_name="qsin_analysis_results.csv",
+            mime="text/csv",
+        )
+
+        # 문장별 데이터 시각화 (모든 문장 겹쳐서)
+        col_header, col_help = st.columns([0.85, 0.15])
+        with col_header:
+            st.subheader("문장별 데이터 시각화 (전체 겹쳐보기)")
+        with col_help:
+            with st.popover("💡 도움말"):
+                st.markdown("""
+                #### 그래프 해석 가이드
+                이 그래프는 모든 문장의 Psychometric Function을 겹쳐서 보여주어, 각 문장의 난이도와 변별력을 한눈에 비교할 수 있도록 돕습니다.
+
+                - **기울기 (곡선의 가파름)**: **문장의 변별력** 또는 **측정 품질**을 나타냅니다.
+                    - 곡선이 가파를수록(기울기 값이 높을수록) SNR 변화에 민감하게 반응하는 좋은 측정 문항입니다.
+
+                - **SNR-50 (마커의 x축 위치 및 색상)**: **문장의 난이도**와 **목표값(2dB) 근접성**을 나타냅니다.
+                    - `x` 값이 낮을수록 (왼쪽에 있을수록) 더 쉬운 문장입니다.
+                    - **마커 색상 의미:**
+                        - 🟢 **녹색**: 이상적 난이도 (0.5 ~ 3.5 dB)
+                        - 🟠 **주황색**: 수용 가능 난이도 (-1.0 ~ 5.0 dB)
+                        - 🔴 **빨간색**: 목표 난이도에서 많이 벗어남
+                        - ⚫ **회색**: 신뢰도 낮은 추정치 (`Extrapolated`)
+
+                **좋은 문장을 선별하려면, `녹색` 또는 `주황색` 마커를 가지면서 곡선이 가파른(기울기가 높은) 문장을 우선적으로 고려해야 합니다.**
+                """)
+
+        st.caption("총 360개 문장을 하나의 그래프에 겹쳐서 표시합니다. 로지스틱 곡선의 색상은 각 문장의 등급을 나타냅니다.")
+
+        available_sentence_ids = analysis_results_df['sentence_id'].tolist()
+        selected_sentence_ids = available_sentence_ids
+
+        if not selected_sentence_ids:
+            st.info("시각화할 문장이 없습니다.")
+        else:
+            fig = create_combined_psychometric_plot(
+                all_data_df,
+                selected_sentence_ids,
+                include_logistic=True,
+                include_mean=False,
+                show_legend=False,
+                precomputed_results=analysis_results_df,
+            )
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("분석 가능한 문장이 없습니다. 데이터를 확인해주세요.")
 
 st.divider()
 
@@ -50,8 +167,9 @@ sentence_id_to_analyze = st.number_input(
     help="1부터 360 사이의 숫자를 입력하세요."
 )
 use_dummy_data = st.checkbox(
-    "dummy_ 접두사가 붙은 테스트 데이터만 사용",
-    value=True,
+    "테스트 데이터(dummy_ 접두사)만 사용",
+    value=False,
+    key='analyze_dummy_check',
     help="체크 시 session_id가 'dummy_'로 시작하는 데이터만 분석합니다. 체크 해제 시 그 외의 데이터를 분석합니다."
 )
 
@@ -60,7 +178,7 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
         # --- 2. 데이터 로드 및 중간 결과 표시 (디버깅) ---
         st.header("2. 데이터 처리 과정 확인")
         with st.spinner(f"DB에서 문장 {sentence_id_to_analyze}번의 데이터를 로드하고 전처리 중입니다..."):
-            processed_data = get_data_for_sentence(supabase, sentence_id_to_analyze, use_dummy_data)
+            processed_data = get_all_sentence_data(supabase, use_dummy_data, sentence_id_to_analyze)
 
         if processed_data.empty:
             st.error(f"문장 {sentence_id_to_analyze}번에 대한 분석을 진행할 수 없습니다. 데이터가 없거나 유효한 SNR 레벨이 연결되지 않았습니다.")
@@ -88,78 +206,15 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
             if status == 'Success':
                 snr50_val = result.get('snr_50')
                 slope_val = result.get('slope')
-                
-                with st.container(border=True):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric(
-                            label="추정 SNR-50",
-                            value=f"{snr50_val:.2f} dB", # 단위 추가
-                            help="피험자가 이 문장의 단어를 50% 확률로 맞추는 데 필요한 신호 대 잡음비(Signal-to-Noise Ratio)입니다. **값이 낮을수록 더 시끄러운 환경에서도 잘 들리는 쉬운 문장**임을 의미합니다."
-                        )
-                    with col2:
-                        st.metric(
-                            label="기울기",
-                            value=f"{slope_val:.2f} %/dB", # 단위 추가
-                            help="SNR-50 지점 부근에서 SNR이 1dB 변할 때마다 정답률이 몇 %씩 변하는지를 나타내는 **민감도 지표**입니다. **값이 높을수록 소음 변화에 따라 난이도가 급격하게 변하는 문장**임을 의미합니다."
-                        )
+                display_analysis_metrics(snr50_val, slope_val)
             else:
                 st.error(f"분석 실패: **{status}**")
                 st.warning("데이터 분포를 확인해주세요. 신뢰도 있는 분석을 위해서는 최소 3개 이상의 다양한 SNR 레벨에 대한 데이터가 필요합니다.")
 
             # --- 4. 시각화 ---
             st.header("4. Psychometric Function Curve")
-            model = result.get('model')
-            snr50_val = result.get('snr_50')
-            plot_data = result.get('plot_data') # 평균 정답률 데이터
-
-            if processed_data.empty:
-                st.warning("시각화할 데이터가 없습니다.")
-            else:
-                fig = go.Figure()
-                
-                # 1. Box Plot으로 전체 데이터 분포 표시
-                fig.add_trace(go.Box(
-                    x=processed_data['snr_level'],
-                    y=processed_data['correct_rate'],
-                    name='정답률 분포',
-                    boxpoints=False, # 개별 점은 숨김
-                    marker_color='orange',
-                    boxmean=True,
-                    visible='legendonly'
-                ))
-
-                # 2. Scatter Plot으로 평균 정답률 표시 (수정된 부분)
-                if not plot_data.empty:
-                    fig.add_trace(go.Scatter(
-                        x=plot_data['snr_level'],
-                        y=plot_data['correct_rate'],
-                        mode='lines+markers',
-                        name='평균 정답률',
-                        line=dict(color='dodgerblue', dash='dot'),
-                        marker=dict(size=10, color='dodgerblue', symbol='circle')
-                    ))
-
-                # 3. 로지스틱 회귀 곡선 및 SNR-50 라인 표시
-                if model and snr50_val is not None:
-                    agg_plot_data = processed_data.groupby('snr_level')['correct_rate'].mean().reset_index()
-                    x_range = np.linspace(agg_plot_data['snr_level'].min() - 5, agg_plot_data['snr_level'].max() + 5, 100)
-                    y_curve = model.predict_proba(x_range.reshape(-1, 1))[:, 1]
-                    
-                    fig.add_trace(go.Scatter(
-                        x=x_range, y=y_curve, mode='lines', name='로지스틱 회귀 곡선', line=dict(color='red', width=2)
-                    ))
-                    fig.add_vline(x=snr50_val, line_width=2, line_dash="dash", line_color="green",
-                                annotation_text=f"SNR-50: {snr50_val:.2f} dB", annotation_position="top right")
-                    fig.add_hline(y=0.5, line_width=2, line_dash="dash", line_color="green")
-                
-                fig.update_layout(
-                    title=f"문장 {sentence_id_to_analyze}번 : \"{full_sentence_text}\"",
-                    xaxis_title="SNR Level (dB)",
-                    yaxis_title="정답률 (Correct Rate)",
-                    yaxis_range=[-0.05, 1.05],
-                    legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-                )
+            fig = create_psychometric_plot(processed_data, result, sentence_id_to_analyze)
+            if fig:
                 st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:

@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import random
+import uuid
 import time
 from datetime import datetime
 from modules.db_utils import init_supabase_client, get_profiles, get_patients
@@ -57,10 +58,7 @@ with st.form(key="report_form"):
     st.markdown("##### 세션 및 테스트 정보")
     c3, c4 = st.columns(2)
     with c3:
-        session_id = st.text_input("세션 ID", value=f"dummy_{int(time.time())}")
-        session_idx_no = st.text_input("세션 인덱스 번호", value="1")
-    with c4:
-        test_result = st.number_input("테스트 결과 (종합)", value=0.0, format="%.2f")
+        session_id = st.text_input("세션 ID", value=f"dummy_{int(time.time())}")    
 
     st.markdown("##### 테스트 환경 설정")
     c5, c6, c7 = st.columns(3)
@@ -71,8 +69,8 @@ with st.form(key="report_form"):
         direction = st.text_input("Direction", value="LR", disabled=True)
         volume_level = st.number_input("볼륨 레벨", value=0)
     with c7:
-        # 수정된 부분: SNR 레벨을 selectbox로 변경
-        snr_level = st.selectbox("SNR 레벨 (dB)", options=[-10, -5, 0, 5, 10, 15, 20, 25])
+        # SNR 레벨 선택은 비활성화, 대신 예측 평균 dB를 입력받음
+        predicted_mean_db = st.number_input("예측 평균 dB", value=2.0, format="%.2f", help="로지스틱 50% 교차점을 설정합니다.")
         sound_set = st.number_input("사운드 세트 번호", value=0)
 
     memo = st.text_area("메모")
@@ -84,66 +82,76 @@ if submit_button:
     patient_user_id = patient_map.get(selected_patient_name)
     if not all([user_id, patient_user_id]):
         st.warning("담당자와 환자를 선택해주세요.")
-    else:
-        with st.spinner("자동으로 360개 점수 데이터를 생성하고 데이터베이스에 전송 중입니다..."):
-            
-            # --- 수정된 부분: SNR 레벨에 따른 가중치 부여 함수 ---
-            def generate_biased_score(snr):
-                """
-                SNR 레벨에 따라 가중치를 적용하여 점수를 생성합니다.
-                SNR이 높을수록 높은 점수가 나올 확률이 높아집니다.
-                """
-                possible_scores = [0, 0.5, 1]
-                
-                if snr <= -10:
-                    weights = [0.80, 0.15, 0.05]  # P(0), P(0.5), P(1)
-                elif snr == -5:
-                    weights = [0.60, 0.30, 0.10]
-                elif snr == 0:
-                    weights = [0.30, 0.40, 0.30]
-                elif snr == 5:
-                    weights = [0.10, 0.40, 0.50]
-                elif snr == 10:
-                    weights = [0.05, 0.25, 0.70]
-                elif snr == 15:
-                    weights = [0.05, 0.10, 0.85]
-                else: # snr >= 20
-                    weights = [0.02, 0.03, 0.95]
-                
-                return random.choices(possible_scores, weights=weights, k=1)[0]
-            # --- 수정 종료 ---
+    else:        
+        session_id_to_use = session_id       
 
-            scores_payload = []
-            for sentence_info in sentences_data:
-                num_keywords = len(sentence_info.get("keyword", []))
-                # 가중치 적용 함수 호출
-                random_scores = [generate_biased_score(snr_level) for _ in range(num_keywords)]
-                
-                scores_payload.append({
-                    "index": sentence_info["index"],
-                    "sentences": sentence_info["sentences"],
-                    "full_sentence": sentence_info["fullSentence"],
-                    "score": random_scores,
-                    "total_score": sum(random_scores)
-                })
+        with st.spinner("SNR 그리드(-5, 0, 5)로 1080개 점수 데이터를 생성하여 데이터베이스에 전송 중입니다..."):
+            SNR_GRID = [-5, 0, 5]
 
-            report_payload = {
-                "p_user_id": user_id, "p_patient_user_id": patient_user_id,
-                "p_receiver": receiver, "p_fixed_type": fixed_type, "p_direction": direction,
-                "p_volume_level": int(volume_level), "p_snr_level": int(snr_level),
-                "p_memo": memo, "p_sound_set": int(sound_set),
-                "p_test_datetime": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "p_test_result": float(test_result), "p_reg_timestamp": int(time.time()),
-                "p_session_id": session_id, "p_session_idx_no": str(session_idx_no),
-                "p_scores": scores_payload
-            }
-            try:
-                data, error = supabase.rpc('create_qsin_report_with_scores', report_payload).execute()
-                api_response = data[1] if data and len(data) > 1 else None
-                if api_response:
-                    st.success(f"성공적으로 테스트 리포트를 생성했습니다! (ID: {api_response})")
-                    st.balloons()
-                else:
-                    st.error(f"데이터 생성 중 오류 발생: {error.message if error else '알 수 없는 오류'}")
-            except Exception as e:
-                st.error(f"RPC 호출 중 예외 발생: {e}")
+            def logistic_p(snr: float, center_db: float, slope_pct_per_db: float = 10.0) -> float:
+                # slope(%/dB) -> coef b, intercept a = -b*center
+                b = (slope_pct_per_db / 100.0) * 4.0
+                a = -b * center_db
+                z = a + b * snr
+                return 1.0 / (1.0 + (2.718281828459045 ** (-z)))
+
+            def sample_score_from_p(p: float, h_base: float = 0.1):
+                # 분포: w1=(1-h)p, w05=2hp, w0=1-w1-w05; h는 안정성을 위해 min으로 캡핑
+                p = max(0.0, min(1.0, p))
+                if p == 0.0:
+                    return 0.0
+                if p == 1.0:
+                    return 1.0
+                # h는 (1-p)/p 이하로 제한하여 w0>=0 보장
+                h_max = (1.0 - p) / p
+                h = min(h_base, h_max) if h_max > 0 else 0.0
+                w1 = (1.0 - h) * p
+                w05 = 2.0 * h * p
+                w0 = max(0.0, 1.0 - w1 - w05)
+                weights = [w0, w05, w1]
+                return random.choices([0.0, 0.5, 1.0], weights=weights, k=1)[0]
+
+            created_ids = []
+            total_records = 0
+            for idx, snr in enumerate(SNR_GRID, start=1):
+                scores_payload = []
+                for sentence_info in sentences_data:
+                    num_keywords = len(sentence_info.get("keyword", []))
+                    p = logistic_p(snr, center_db=predicted_mean_db, slope_pct_per_db=10.0)
+                    random_scores = [sample_score_from_p(p) for _ in range(num_keywords)]
+                    scores_payload.append({
+                        "index": sentence_info["index"],
+                        "sentences": sentence_info["sentences"],
+                        "full_sentence": sentence_info["fullSentence"],
+                        "score": random_scores,
+                        "total_score": sum(random_scores)
+                    })
+
+                report_payload = {
+                    "p_user_id": user_id, "p_patient_user_id": patient_user_id,
+                    "p_receiver": receiver, "p_fixed_type": fixed_type, "p_direction": direction,
+                    "p_volume_level": int(volume_level), "p_snr_level": int(snr),
+                    "p_memo": memo, "p_sound_set": int(sound_set),
+                    "p_test_datetime": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "p_test_result": 0.0, "p_reg_timestamp": int(time.time()),
+                    "p_session_id": session_id_to_use, "p_session_idx_no": str(idx),
+                    "p_scores": scores_payload
+                }
+                try:
+                    data, error = supabase.rpc('create_qsin_report_with_scores', report_payload).execute()
+                    api_response = data[1] if data and len(data) > 1 else None
+                    if api_response:
+                        created_ids.append(api_response)
+                        total_records += len(scores_payload)
+                    else:
+                        st.error(f"SNR {snr} 처리 중 오류: {error.message if error else '알 수 없는 오류'}")
+                except Exception as e:
+                    st.error(f"RPC 호출 중 예외 발생 (SNR {snr}): {e}")
+
+            if created_ids:
+                st.success(f"성공적으로 {len(SNR_GRID)}개의 리포트를 생성했고, 총 {total_records}개 문장 점수를 삽입했습니다.")
+                st.write(f"생성된 리포트 IDs: {created_ids}")
+                st.info(f"사용된 세션 ID: {session_id_to_use}")
+                st.balloons()
+            else:
+                st.error("어떤 리포트도 생성되지 않았습니다. 로그를 확인해주세요.")
