@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import io
 from modules.db_utils import init_supabase_client
 from modules.analysis_utils import (    
     get_all_sentence_data, 
@@ -92,29 +93,99 @@ if st.session_state.temp_download_data is not None:
     if analysis_results_df is not None and not analysis_results_df.empty:
         st.success(f"총 {len(analysis_results_df)}개 문장에 대한 분석이 완료되었습니다.")
 
-        col1, col2, col3, col4 = st.columns(4)
+        # 분석에서 제외된 문장 정보 표시
+        if st.session_state.temp_download_data:
+            full_df = pd.read_csv(io.StringIO(st.session_state.temp_download_data.decode('utf-8-sig')))
+            all_ids = set(full_df['sentence_id'].unique())
+            analyzed_ids = set(analysis_results_df['sentence_id'].unique())
+            excluded_ids = sorted(list(all_ids - analyzed_ids))
+
+            if excluded_ids:
+                st.warning(f"⚠️ **{len(excluded_ids)}개**의 문장이 분석에서 제외되었습니다. (데이터 부족 또는 정답률 불변)")
+                with st.expander("제외된 문장 ID 목록 확인"):
+                    st.write(", ".join(map(str, excluded_ids)))
+
+        # 등급별 통계
+        st.subheader("등급별 문장 수")
+
+        # 등급 기준 선택 UI
+        classification_method = st.radio(
+            "등급 분류 기준 선택",
+            ("사분위수(IQR) 기반 (권장)", "평균 ± 표준편차 기반"),
+            index=0,
+            horizontal=True,
+            help="분석된 SNR-50 데이터의 분포를 바탕으로 등급을 나누는 기준을 선택합니다."
+        )
+
+        if classification_method == "사분위수(IQR) 기반 (권장)":
+            st.info("""
+            **💡 사분위수(IQR) 기반 분류**
+            
+            데이터의 중간 50% 범위(IQR)를 기준으로 등급을 매깁니다.
+            - **Ideal**: -8.56 ~ -5.57 dB (Q1 ~ Q3)
+            - **Acceptable**: -10.05 ~ -4.07 dB (Q1-0.5*IQR ~ Q3+0.5*IQR)
+            """)
+            ideal_range = (-8.56, -5.57)
+            acceptable_range = (-10.05, -4.07)
+        else:
+            st.info("""
+            **💡 평균 ± 표준편차 기반 분류**
+            
+            데이터가 정규분포를 따른다고 가정할 때 사용하는 일반적인 통계적 기준입니다.
+            - **Ideal**: -8.13 ~ -5.98 dB (평균 ± 0.5σ)
+            - **Acceptable**: -9.21 ~ -4.90 dB (평균 ± 1.0σ)
+            """)
+            ideal_range = (-8.13, -5.98)
+            acceptable_range = (-9.21, -4.90)
+
+        # 선택된 기준으로 Validity 재계산 (Extrapolated는 유지)
+        def reclassify_validity(row):
+            if row['validity'] == 'Extrapolated':
+                return 'Extrapolated'
+            snr = row['snr_50']
+            if ideal_range[0] <= snr <= ideal_range[1]:
+                return 'Ideal'
+            elif acceptable_range[0] <= snr <= acceptable_range[1]:
+                return 'Acceptable'
+            else:
+                return 'Warning'
+
+        # 원본 데이터 보존을 위해 복사본 사용
+        display_df = analysis_results_df.copy()
+        display_df['validity'] = display_df.apply(reclassify_validity, axis=1)
+
+        validity_counts = display_df['validity'].value_counts()
+        v_cols = st.columns(4)
+        with v_cols[0]:
+            st.metric("Ideal ✅", f"{validity_counts.get('Ideal', 0)} 개")
+        with v_cols[1]:
+            st.metric("Acceptable 👍", f"{validity_counts.get('Acceptable', 0)} 개")
+        with v_cols[2]:
+            st.metric("Warning ⚠️", f"{validity_counts.get('Warning', 0)} 개")
+        with v_cols[3]:
+            st.metric("Extrapolated ⚠️", f"{validity_counts.get('Extrapolated', 0)} 개")
+
+        st.subheader("전체 통계")
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("총 데이터 행 수", f"{st.session_state.total_data_rows:,}")
         with col2:
-            st.metric("분석된 문장 수", len(analysis_results_df))
+            st.metric("분석된 문장 수", len(display_df))
         with col3:
-            st.metric("평균 SNR-50", f"{analysis_results_df['snr_50'].mean():.2f} dB")
-        with col4:
-            # Validity 등급별 카운트
-            ideal_count = len(analysis_results_df[analysis_results_df['validity'] == 'Ideal'])
-            st.metric("Ideal 등급 문장 수", ideal_count)
+            st.metric("평균 SNR-50", f"{display_df['snr_50'].mean():.2f} dB")
 
         st.subheader("문장별 분석 결과")
-        display_df = analysis_results_df.copy()
-        display_df['snr_50'] = display_df['snr_50'].round(2)
-        display_df['slope'] = display_df['slope'].round(2)
-        if 'total_score_sum' in display_df.columns:
-            display_df['total_score_sum'] = display_df['total_score_sum'].round(0)
-        if 'avg_score' in display_df.columns:
-            display_df['avg_score'] = display_df['avg_score'].round(2)
+        # display_df는 이미 재계산된 validity를 가지고 있음
+        table_df = display_df.copy()
+        table_df['snr_50'] = table_df['snr_50'].round(2)
+        table_df['slope'] = table_df['slope'].round(2)
+        if 'total_score_sum' in table_df.columns:
+            table_df['total_score_sum'] = table_df['total_score_sum'].round(0)
+        if 'avg_score' in table_df.columns:
+            table_df['avg_score'] = table_df['avg_score'].round(2)
         
         st.dataframe(
-            display_df,
+            table_df,
             column_config={
                 "sentence_id": "문장 ID",
                 "full_sentence": st.column_config.TextColumn("문장", width="large"),
@@ -129,7 +200,7 @@ if st.session_state.temp_download_data is not None:
             use_container_width=True
         )
 
-        analysis_csv = analysis_results_df.to_csv(index=False).encode('utf-8-sig')
+        analysis_csv = display_df.to_csv(index=False).encode('utf-8-sig')
         st.download_button(
             label="📊 분석 결과 다운로드 (CSV)",
             data=analysis_csv,
@@ -153,17 +224,17 @@ if st.session_state.temp_download_data is not None:
                 - **SNR-50 (마커의 x축 위치 및 색상)**: **문장의 난이도**와 **목표값(2dB) 근접성**을 나타냅니다.
                     - `x` 값이 낮을수록 (왼쪽에 있을수록) 더 쉬운 문장입니다.
                     - **마커 색상 의미:**
-                        - 🟢 **녹색**: 이상적 난이도 (0.5 ~ 3.5 dB)
-                        - 🟠 **주황색**: 수용 가능 난이도 (-1.0 ~ 5.0 dB)
-                        - 🔴 **빨간색**: 목표 난이도에서 많이 벗어남
-                        - ⚫ **회색**: 신뢰도 낮은 추정치 (`Extrapolated`)
+                        - 🟢 **녹색**: 이상적 난이도 (Ideal)
+                        - 🟠 **주황색**: 수용 가능 난이도 (Acceptable)
+                        - 🔴 **빨간색**: 주의 필요 (Warning)
+                        - ⚫ **회색**: 신뢰도 낮은 추정치 (Extrapolated) - *그래프 미표시*
 
                 **좋은 문장을 선별하려면, `녹색` 또는 `주황색` 마커를 가지면서 곡선이 가파른(기울기가 높은) 문장을 우선적으로 고려해야 합니다.**
                 """)
 
         st.caption("총 360개 문장을 하나의 그래프에 겹쳐서 표시합니다. 로지스틱 곡선의 색상은 각 문장의 등급을 나타냅니다.")
 
-        available_sentence_ids = analysis_results_df['sentence_id'].tolist()
+        available_sentence_ids = display_df['sentence_id'].tolist()
         selected_sentence_ids = available_sentence_ids
 
         if not selected_sentence_ids:
@@ -174,8 +245,10 @@ if st.session_state.temp_download_data is not None:
                 include_logistic=True,
                 include_mean=False,
                 show_legend=False,
-                precomputed_results=analysis_results_df,
+                precomputed_results=display_df,
                 snr_range=st.session_state.data_snr_range,
+                ideal_range=ideal_range,
+                acceptable_range=acceptable_range
             )
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
@@ -215,7 +288,7 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
             full_sentence_text = processed_data['full_sentence'].iloc[0]
             st.markdown(f"**분석 대상 문장: \"{full_sentence_text}\"**")
 
-            display_df = processed_data.drop(columns=['session_id', 'full_sentence', 'sentence_id'])
+            display_df = processed_data.drop(columns=['session_id', 'full_sentence', 'sentence_id', 'user_id'])
             st.dataframe(display_df)
 
             csv_data = processed_data.to_csv(index=False).encode('utf-8')

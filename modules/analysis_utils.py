@@ -18,6 +18,7 @@ def _process_raw_data(data: list):
             records.append({
                 'session_id': report_info.get('session_id'),
                 'user_id': report_info.get('user_id'),
+                'patient_user_id': report_info.get('patient_user_id'),
                 'sentence_id': item['index'],
                 'sentences': item['sentences'],
                 'total_score': item['total_score'],
@@ -43,7 +44,7 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
 
         base_select = (
             "index, sentences, total_score, full_sentence, score,"
-            " test_reports_qsin!inner(snr_level, session_id, user_id)"
+            " test_reports_qsin!inner(snr_level, session_id, user_id, patient_user_id)"
         )
 
         def add_sentence_filter(q):
@@ -105,7 +106,7 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
             return pd.DataFrame()
 
         # 반환 컬럼 정리
-        return df[['session_id', 'user_id', 'sentence_id', 'full_sentence',
+        return df[['session_id', 'user_id', 'patient_user_id', 'sentence_id', 'full_sentence',
                    'snr_level', 'score', 'total_score', 'correct_rate']]
 
     except Exception as e:
@@ -164,9 +165,10 @@ def estimate_snr50_for_sentence(data: pd.DataFrame):
         if not (valid_range_min <= snr_50 <= valid_range_max):
             validity = 'Extrapolated'
         else:
-            if 0.5 <= snr_50 <= 3.5:
+            # 제안 2: 사분위수(IQR) 기반
+            if -8.56 <= snr_50 <= -5.57:
                 validity = 'Ideal'
-            elif -1.0 <= snr_50 <= 5.0:
+            elif -10.05 <= snr_50 <= -4.07:
                 validity = 'Acceptable'
             else:
                 validity = 'Warning'
@@ -331,6 +333,8 @@ def create_combined_psychometric_plot(
     show_legend: bool = False,
     precomputed_results: pd.DataFrame | None = None,
     snr_range: tuple[float, float] = (-10, 10),
+    ideal_range: tuple[float, float] = (-8.56, -5.57),
+    acceptable_range: tuple[float, float] = (-10.05, -4.07)
 ):
     """
     여러 문장(sentence_id)의 심리물리 곡선을 하나의 Figure에 겹쳐서 표시합니다.
@@ -339,6 +343,8 @@ def create_combined_psychometric_plot(
     - include_logistic: 각 문장에 대해 로지스틱 회귀 곡선을 함께 표시할지 여부
     - precomputed_results: 사전 계산된 분석 결과 (snr_50, slope, validity 포함)
     - snr_range: SNR 데이터 범위 (min, max)
+    - ideal_range: Ideal 등급의 SNR 범위 (min, max)
+    - acceptable_range: Acceptable 등급의 SNR 범위 (min, max)
     """
     if not sentence_ids:
         st.warning("시각화할 데이터가 없습니다.")
@@ -370,41 +376,43 @@ def create_combined_psychometric_plot(
             # 표의 snr_50, slope를 그대로 사용해 로지스틱 곡선을 복원 (재학습 없음)
             r = results_map.get(sid)
             if r is not None and r.get('snr_50') is not None and r.get('slope') is not None:
+                validity = r.get('validity', 'Warning')
+                
+                # Extrapolated 등급은 그래프 표시에서 제외
+                if validity == 'Extrapolated':
+                    continue
+
                 snr50 = float(r['snr_50'])
                 slope_pct_per_db = float(r['slope'])  # %/dB
-                validity = r.get('validity', 'Warning')
                 
                 # Validity와 SNR-50 값에 따른 곡선 색상 결정 (gradient 적용)
                 if validity == 'Ideal':
-                    # 녹색 계열: 0.5~3.5 범위에서 연두색 → 진한 녹색
-                    ratio = (snr50 - 0.5) / 3.0  # 0.0 ~ 1.0
-                    ratio = max(0.0, min(1.0, ratio))
-                    r_val = int(144 * (1 - ratio))  # 144 → 0
-                    g_val = int(238 - 110 * ratio)  # 238 → 128
-                    b_val = int(144 * (1 - ratio))  # 144 → 0
-                    curve_color = f'rgba({r_val}, {g_val}, {b_val}, 0.6)'
+                    # Ideal 범위
+                    span = ideal_range[1] - ideal_range[0]
+                    normalized_pos = (snr50 - ideal_range[0]) / span if span > 0 else 0.5
+                    normalized_pos = max(0.0, min(1.0, normalized_pos))
+                    
+                    color_val = int(180 * (1 - normalized_pos)) # 0(녹색) ~ 180(청록)
+                    curve_color = f'hsl({color_val}, 70%, 45%)'
                 elif validity == 'Acceptable':
-                    # 주황색 계열: -1.0~5.0 범위에서 노란색 → 주황색 → 갈색
-                    ratio = (snr50 - (-1.0)) / 6.0  # 0.0 ~ 1.0
-                    ratio = max(0.0, min(1.0, ratio))
-                    r_val = 255
-                    g_val = int(215 - 100 * ratio)  # 215 → 115
-                    b_val = int(100 * (1 - ratio))  # 100 → 0
-                    curve_color = f'rgba({r_val}, {g_val}, {b_val}, 0.6)'
+                    # Acceptable 범위
+                    span = acceptable_range[1] - acceptable_range[0]
+                    normalized_pos = (snr50 - acceptable_range[0]) / span if span > 0 else 0.5
+                    normalized_pos = max(0.0, min(1.0, normalized_pos))
+                    
+                    color_val = 30 + int(30 * (1 - normalized_pos)) # 30(주황) ~ 60(노랑)
+                    curve_color = f'hsl({color_val}, 80%, 50%)'
                 elif validity == 'Warning':
-                    # 빨간색 계열: 분산도에 따라 밝은 빨강 → 진한 빨강
-                    distance = abs(snr50 - 2.0)  # 2dB에서 얼마나 멀리 떨어져 있는지
-                    ratio = min(1.0, distance / 10.0)  # 거리가 멀수록 진하게
-                    r_val = 255
-                    g_val = int(100 * (1 - ratio))  # 100 → 0
-                    b_val = int(100 * (1 - ratio))  # 100 → 0
-                    curve_color = f'rgba({r_val}, {g_val}, {b_val}, 0.6)'
-                else:  # Extrapolated
-                    # 회색 계열: 데이터 범위를 벗어난 정도에 따라 밝은 회색 → 진한 회색
-                    distance = abs(snr50 - 2.0)
-                    ratio = min(1.0, distance / 15.0)
-                    gray_val = int(180 - 60 * ratio)  # 180 → 120
-                    curve_color = f'rgba({gray_val}, {gray_val}, {gray_val}, 0.4)'
+                    # Warning 범위: 그 외
+                    if snr50 > acceptable_range[1]:
+                        normalized_pos = min((snr50 - acceptable_range[1]) / 5.0, 1.0) # 5dB 범위까지
+                    else:
+                        normalized_pos = min((acceptable_range[0] - snr50) / 5.0, 1.0)
+                    color_val = int(30 * normalized_pos) # 0(빨강)에 가까워짐
+                    curve_color = f'hsl({color_val}, 90%, 50%)'
+                else:
+                    # Fallback
+                    curve_color = 'rgba(128, 128, 128, 0.5)'
                 
                 coef = (slope_pct_per_db / 100.0) * 4.0  # 로지스틱 기울기와의 변환
                 # p(x) = 1 / (1 + exp(-(a + b*x)))
@@ -421,9 +429,6 @@ def create_combined_psychometric_plot(
                     showlegend=show_legend
                 ))
 
-                # SNR-50 포인트 표시 (y는 0.5)
-                validity = r.get('validity', 'Warning')
-                
                 # 유효성 및 2dB 근접성에 따라 마커 색상 결정
                 color_map = {
                     'Ideal': 'green',
