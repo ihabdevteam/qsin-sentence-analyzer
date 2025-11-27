@@ -172,7 +172,7 @@ if st.session_state.temp_download_data is not None:
         with col2:
             st.metric("분석된 문장 수", len(display_df))
         with col3:
-            st.metric("평균 SNR-50", f"{display_df['snr_50'].mean():.2f} dB")
+            st.metric("중앙값(Median) SNR-50", f"{display_df['snr_50'].median():.2f} dB")
 
         st.subheader("문장별 분석 결과")
         # display_df는 이미 재계산된 validity를 가지고 있음
