@@ -113,10 +113,15 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
         st.error(f"전체 데이터를 불러오는 중 오류가 발생했습니다: {e}")
         return pd.DataFrame()
 
-def estimate_snr50_for_sentence(data: pd.DataFrame):
+def estimate_snr50_for_sentence(
+    data: pd.DataFrame
+):
     """
     단일 문장에 대한 데이터(snr_level, correct_rate)를 받아
     로지스틱 회귀 분석으로 SNR-50과 기울기를 추정합니다.
+    
+    이 함수는 순수하게 수치적 분석(SNR-50, Slope)만 수행하며,
+    등급(Validity) 분류는 수행하지 않습니다. (단, 데이터 범위 부족으로 인한 Extrapolated 여부는 판단)
     """
     agg_data = data.groupby('snr_level')['correct_rate'].mean().reset_index()
 
@@ -157,21 +162,10 @@ def estimate_snr50_for_sentence(data: pd.DataFrame):
         valid_range_min = snr_min - 5
         valid_range_max = snr_max + 5
         
-        # 신뢰도 및 난이도 등급 체크
-        snr_min, snr_max = X['snr_level'].min(), X['snr_level'].max()
-        valid_range_min = snr_min - 5
-        valid_range_max = snr_max + 5
-        
         if not (valid_range_min <= snr_50 <= valid_range_max):
             validity = 'Extrapolated'
         else:
-            # 제안 2: 사분위수(IQR) 기반
-            if -8.56 <= snr_50 <= -5.57:
-                validity = 'Ideal'
-            elif -10.05 <= snr_50 <= -4.07:
-                validity = 'Acceptable'
-            else:
-                validity = 'Warning'
+            validity = 'Analyzed'
 
         return {
             'status': 'Success', 
@@ -185,9 +179,76 @@ def estimate_snr50_for_sentence(data: pd.DataFrame):
     except Exception as e:
         return {'status': f'Error: {e}', 'snr_50': None, 'slope': None, 'validity': 'Error', 'model': None, 'plot_data': agg_data}
 
+def calculate_dynamic_ranges(analysis_results_df: pd.DataFrame) -> dict:
+    """
+    분석 결과 데이터프레임에서 유효한 SNR-50 데이터를 추출하여
+    IQR 기반 및 Mean/Std 기반의 동적 범위를 계산합니다.
+    """
+    # Extrapolated가 아닌 유효한 SNR-50 데이터만 추출
+    valid_snr_data = analysis_results_df[analysis_results_df['validity'] != 'Extrapolated']['snr_50']
+    
+    if not valid_snr_data.empty:
+        stats = valid_snr_data.describe()
+        mean = stats['mean']
+        std = stats['std']
+        q1 = stats['25%']
+        q3 = stats['75%']
+        iqr = q3 - q1
+        
+        return {
+            'iqr': {
+                'ideal': (q1, q3),
+                'acceptable': (q1 - 0.5 * iqr, q3 + 0.5 * iqr)
+            },
+            'mean_std': {
+                'ideal': (mean - 0.5 * std, mean + 0.5 * std),
+                'acceptable': (mean - 1.0 * std, mean + 1.0 * std)
+            }
+        }
+    else:
+        # 데이터가 없을 경우 기본값 사용
+        return {
+            'iqr': {'ideal': (-8.56, -5.57), 'acceptable': (-10.05, -4.07)},
+            'mean_std': {'ideal': (-8.13, -5.98), 'acceptable': (-9.21, -4.90)}
+        }
+
+def reclassify_results_with_ranges(
+    df: pd.DataFrame,
+    ideal_range: tuple[float, float],
+    acceptable_range: tuple[float, float]
+) -> pd.DataFrame:
+    """
+    주어진 ideal_range와 acceptable_range를 사용하여
+    데이터프레임의 'validity' 컬럼을 재계산합니다.
+    """
+    if df.empty:
+        return df
+
+    def _classify(row):
+        if row.get('validity') == 'Extrapolated':
+            return 'Extrapolated'
+        
+        snr = row.get('snr_50')
+        if snr is None:
+            return 'Error'
+            
+        if ideal_range[0] <= snr <= ideal_range[1]:
+            return 'Ideal'
+        elif acceptable_range[0] <= snr <= acceptable_range[1]:
+            return 'Acceptable'
+        else:
+            return 'Warning'
+
+    df_copy = df.copy()
+    df_copy['validity'] = df_copy.apply(_classify, axis=1)
+    return df_copy
+
 def analyze_all_sentences(data: pd.DataFrame):
     """
     전체 데이터에 대해 문장별로 SNR-50과 기울기를 분석합니다.
+    
+    순수하게 수치적 분석(SNR-50, Slope)에 집중하며,
+    최종 등급(Validity) 분류는 전체 통계 산출 후, reclassify_results_with_ranges를 통해 수행해야 합니다.
     """
     if data.empty:
         return pd.DataFrame()
@@ -203,6 +264,7 @@ def analyze_all_sentences(data: pd.DataFrame):
         progress_bar.progress((i + 1) / len(sentence_ids))
         
         sentence_data = data[data['sentence_id'] == sentence_id]
+        # 범위 인자 없이 호출하여 수치 계산에만 집중 (기본값으로 임시 등급이 매겨지나, 이후 재분류됨)
         result = estimate_snr50_for_sentence(sentence_data)
         
         if result['status'] == 'Success':

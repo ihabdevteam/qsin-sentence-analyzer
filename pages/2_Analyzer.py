@@ -8,7 +8,9 @@ from modules.analysis_utils import (
     analyze_all_sentences,
     display_analysis_metrics,
     create_psychometric_plot,
-    create_combined_psychometric_plot
+    create_combined_psychometric_plot,
+    calculate_dynamic_ranges,
+    reclassify_results_with_ranges
 )
 
 st.set_page_config(page_title="점수 분석", layout="wide")
@@ -75,7 +77,7 @@ with cols_reset[0]:
         st.session_state.total_data_rows = None
         st.rerun()
 
-# --- 조회/분석 결과 표시 (세션 유지) ---
+# 조회/분석 결과 표시 (세션 유지)
 if st.session_state.temp_download_data is not None:
     analysis_results_df = st.session_state.analysis_results_df
     
@@ -117,42 +119,34 @@ if st.session_state.temp_download_data is not None:
             help="분석된 SNR-50 데이터의 분포를 바탕으로 등급을 나누는 기준을 선택합니다."
         )
 
+        # 동적 범위 계산 로직
+        st.session_state.calculated_ranges = calculate_dynamic_ranges(analysis_results_df)
+
         if classification_method == "사분위수(IQR) 기반 (권장)":
-            st.info("""
-            **💡 사분위수(IQR) 기반 분류**
+            ideal_range = st.session_state.calculated_ranges['iqr']['ideal']
+            acceptable_range = st.session_state.calculated_ranges['iqr']['acceptable']
+            
+            st.info(f"""
+            **💡 사분위수(IQR) 기반 분류 (현재 데이터 기준)**
             
             데이터의 중간 50% 범위(IQR)를 기준으로 등급을 매깁니다.
-            - **Ideal**: -8.56 ~ -5.57 dB (Q1 ~ Q3)
-            - **Acceptable**: -10.05 ~ -4.07 dB (Q1-0.5*IQR ~ Q3+0.5*IQR)
+            - **Ideal**: {ideal_range[0]:.2f} ~ {ideal_range[1]:.2f} dB (Q1 ~ Q3)
+            - **Acceptable**: {acceptable_range[0]:.2f} ~ {acceptable_range[1]:.2f} dB (Q1-0.5*IQR ~ Q3+0.5*IQR)
             """)
-            ideal_range = (-8.56, -5.57)
-            acceptable_range = (-10.05, -4.07)
         else:
-            st.info("""
-            **💡 평균 ± 표준편차 기반 분류**
+            ideal_range = st.session_state.calculated_ranges['mean_std']['ideal']
+            acceptable_range = st.session_state.calculated_ranges['mean_std']['acceptable']
+            
+            st.info(f"""
+            **💡 평균 ± 표준편차 기반 분류 (현재 데이터 기준)**
             
             데이터가 정규분포를 따른다고 가정할 때 사용하는 일반적인 통계적 기준입니다.
-            - **Ideal**: -8.13 ~ -5.98 dB (평균 ± 0.5σ)
-            - **Acceptable**: -9.21 ~ -4.90 dB (평균 ± 1.0σ)
+            - **Ideal**: {ideal_range[0]:.2f} ~ {ideal_range[1]:.2f} dB (평균 ± 0.5σ)
+            - **Acceptable**: {acceptable_range[0]:.2f} ~ {acceptable_range[1]:.2f} dB (평균 ± 1.0σ)
             """)
-            ideal_range = (-8.13, -5.98)
-            acceptable_range = (-9.21, -4.90)
 
         # 선택된 기준으로 Validity 재계산 (Extrapolated는 유지)
-        def reclassify_validity(row):
-            if row['validity'] == 'Extrapolated':
-                return 'Extrapolated'
-            snr = row['snr_50']
-            if ideal_range[0] <= snr <= ideal_range[1]:
-                return 'Ideal'
-            elif acceptable_range[0] <= snr <= acceptable_range[1]:
-                return 'Acceptable'
-            else:
-                return 'Warning'
-
-        # 원본 데이터 보존을 위해 복사본 사용
-        display_df = analysis_results_df.copy()
-        display_df['validity'] = display_df.apply(reclassify_validity, axis=1)
+        display_df = reclassify_results_with_ranges(analysis_results_df, ideal_range, acceptable_range)
 
         validity_counts = display_df['validity'].value_counts()
         v_cols = st.columns(4)
@@ -175,6 +169,7 @@ if st.session_state.temp_download_data is not None:
             st.metric("중앙값(Median) SNR-50", f"{display_df['snr_50'].median():.2f} dB")
 
         st.subheader("문장별 분석 결과")
+
         # display_df는 이미 재계산된 validity를 가지고 있음
         table_df = display_df.copy()
         table_df['snr_50'] = table_df['snr_50'].round(2)
@@ -299,8 +294,42 @@ if st.button(f"🔍 문장 {sentence_id_to_analyze}번 데이터 분석 실행")
                 mime="text/csv",
             )
             st.header("3. 분석 결과")
+            
+            # 동적 범위가 계산되어 있다면 사용, 아니면 None (기본값 사용)
+            current_ideal_range = None
+            current_acceptable_range = None
+            
+            if 'calculated_ranges' in st.session_state:
+                # 현재 선택된 분류 기준에 따라 범위 결정 (기본값은 IQR)
+
+                # classification_method 변수가 이 스코프에 없을 수 있으므로 확인 필요
+                # 하지만 이 블록은 위에서 classification_method가 정의된 후에 실행되거나, 
+                # 페이지 리로드되면 classification_method는 다시 정의됨.
+
+                # 다만 "1. 분석 대상 선택" 섹션은 "전체 데이터 분석 결과" 섹션과 독립적으로 실행될 수 있음.
+                # 따라서 안전하게 session_state나 기본값을 확인해야 함.
+                
+                # 간단히 IQR을 기본으로 하되, 위에서 계산된 값이 있으면 그것을 우선 사용하도록 로직 구성이 필요함.
+                # 하지만 위쪽 코드는 'temp_download_data'가 있을 때만 실행됨.
+                # 따라서 전체 분석을 먼저 수행하지 않았다면 calculated_ranges가 없을 수 있음.
+                
+                # 만약 calculated_ranges가 있다면 IQR 기준을 우선 적용 (가장 일반적)
+                current_ideal_range = st.session_state.calculated_ranges['iqr']['ideal']
+                current_acceptable_range = st.session_state.calculated_ranges['iqr']['acceptable']
+
             with st.spinner("로지스틱 회귀 모델을 학습하고 SNR-50을 추정합니다..."):
                 result = estimate_snr50_for_sentence(processed_data)
+                
+                # 등급 분류 (범위 정보가 있을 경우)
+                if result['status'] == 'Success' and result.get('validity') != 'Extrapolated':
+                    if current_ideal_range and current_acceptable_range:
+                        snr = result['snr_50']
+                        if current_ideal_range[0] <= snr <= current_ideal_range[1]:
+                            result['validity'] = 'Ideal'
+                        elif current_acceptable_range[0] <= snr <= current_acceptable_range[1]:
+                            result['validity'] = 'Acceptable'
+                        else:
+                            result['validity'] = 'Warning'
 
             status = result.get('status')
             if status == 'Success':
