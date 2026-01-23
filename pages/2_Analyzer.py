@@ -160,13 +160,15 @@ if st.session_state.temp_download_data is not None:
             st.metric("Extrapolated ⚠️", f"{validity_counts.get('Extrapolated', 0)} 개")
 
         st.subheader("전체 통계")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("총 데이터 행 수", f"{st.session_state.total_data_rows:,}")
         with col2:
             st.metric("분석된 문장 수", len(display_df))
         with col3:
             st.metric("중앙값(Median) SNR-50", f"{display_df['snr_50'].median():.2f} dB")
+        with col4:
+            st.metric("평균(Mean) SNR-50", f"{display_df['snr_50'].mean():.2f} dB")
 
         st.subheader("문장별 분석 결과")
 
