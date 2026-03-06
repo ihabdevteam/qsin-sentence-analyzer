@@ -23,6 +23,10 @@ from modules.analysis_utils import (
 st.set_page_config(page_title="점수 분석", layout="wide")
 st.title("Quick-SIN 개별 문장 분석 페이지 (SNR-50 추정)")
 
+def _is_hearing_loss(series: pd.Series) -> pd.Series:
+    """hearing_loss 컬럼을 bool/str/None 모두 안전하게 처리하여 boolean mask 반환"""
+    return series.map(lambda v: str(v).strip().lower() == 'true' if pd.notna(v) else False)
+
 # --- 클라이언트 초기화 ---
 supabase = init_supabase_client()
 if not supabase:
@@ -56,9 +60,10 @@ if st.button("전체 데이터 조회 및 다운로드 준비"):
                 all_data_df['snr_level'].max()
             )
 
-            # hearing_loss 기준으로 분리
-            normal_data = all_data_df[all_data_df['hearing_loss'] != True]
-            hl_data = all_data_df[all_data_df['hearing_loss'] == True]
+            # hearing_loss 기준으로 분리 (bool/str/None 모두 안전하게 처리)
+            hl_mask = _is_hearing_loss(all_data_df['hearing_loss'])
+            normal_data = all_data_df[~hl_mask]
+            hl_data = all_data_df[hl_mask]
             st.session_state.normal_data_rows = len(normal_data)
             st.session_state.hl_data_rows = len(hl_data)
 
@@ -122,9 +127,11 @@ if st.session_state.temp_download_data is not None:
         )
     with col_tol:
         tolerance = st.number_input(
-            "허용 편차 (+-dB)", value=ABSOLUTE_TOLERANCE, step=0.1, format="%.1f",
+            "허용 편차 (+-dB)", value=ABSOLUTE_TOLERANCE, min_value=0.0, step=0.1, format="%.1f",
             help="목표값으로부터의 허용 편차입니다."
         )
+    st.session_state['target'] = target
+    st.session_state['tolerance'] = tolerance
     st.info(f"**임상 유효 범위**: {target - tolerance:.2f} ~ {target + tolerance:.2f} dB")
 
     # --- 탭 구성 ---
@@ -141,7 +148,7 @@ if st.session_state.temp_download_data is not None:
 
             # 제외된 문장 정보
             full_df = pd.read_csv(io.StringIO(st.session_state.temp_download_data.decode('utf-8-sig')))
-            normal_full = full_df[full_df['hearing_loss'] != True]
+            normal_full = full_df[~_is_hearing_loss(full_df['hearing_loss'])]
             all_ids = set(normal_full['sentence_id'].unique()) if not normal_full.empty else set()
             analyzed_ids = set(normal_results_df['sentence_id'].unique())
             excluded_ids = sorted(list(all_ids - analyzed_ids))
@@ -334,16 +341,27 @@ if st.session_state.temp_download_data is not None:
             st.subheader("피험자별 SNR Loss 분석")
 
             if hl_subject_df is not None and not hl_subject_df.empty:
-                cols_subj = st.columns(3)
+                # Extrapolated 피험자 분리
+                valid_subjects = hl_subject_df[hl_subject_df.get('validity', 'Analyzed') != 'Extrapolated'] if 'validity' in hl_subject_df.columns else hl_subject_df
+                extrapolated_count = len(hl_subject_df) - len(valid_subjects)
+
+                cols_subj = st.columns(4)
                 with cols_subj[0]:
                     st.metric("총 피험자 수", len(hl_subject_df))
                 with cols_subj[1]:
-                    st.metric("SNR Loss 평균", f"{hl_subject_df['snr_loss'].mean():.2f} dB")
+                    st.metric("유효 피험자 수", len(valid_subjects))
                 with cols_subj[2]:
-                    st.metric("SNR Loss 중앙값", f"{hl_subject_df['snr_loss'].median():.2f} dB")
+                    snr_loss_mean = valid_subjects['snr_loss'].mean() if not valid_subjects.empty else 0
+                    st.metric("SNR Loss 평균", f"{snr_loss_mean:.2f} dB")
+                with cols_subj[3]:
+                    snr_loss_median = valid_subjects['snr_loss'].median() if not valid_subjects.empty else 0
+                    st.metric("SNR Loss 중앙값", f"{snr_loss_median:.2f} dB")
 
-                # 등급별 인원 분포
-                grade_counts = hl_subject_df['grade'].value_counts()
+                if extrapolated_count > 0:
+                    st.caption(f"* {extrapolated_count}명의 피험자는 Extrapolated(신뢰도 낮은 추정)로 등급 산정에서 제외되었습니다.")
+
+                # 등급별 인원 분포 (유효 피험자만)
+                grade_counts = valid_subjects['grade'].value_counts() if not valid_subjects.empty else pd.Series(dtype=int)
                 cols_grade = st.columns(4)
                 grade_labels = ['정상', '경도', '중도', '고도']
                 for i, grade_name in enumerate(grade_labels):
@@ -363,6 +381,7 @@ if st.session_state.temp_download_data is not None:
                         "snr_50": "SNR-50 (dB)",
                         "snr_loss": "SNR Loss (dB)",
                         "grade": "등급",
+                        "validity": "신뢰도",
                         "slope": "기울기 (%/dB)",
                         "data_points": "데이터 수",
                         "sentences_tested": "테스트 문장 수"
@@ -376,7 +395,7 @@ if st.session_state.temp_download_data is not None:
 
                 fig_hist = go.Figure()
                 fig_hist.add_trace(go.Histogram(
-                    x=hl_subject_df['snr_loss'],
+                    x=valid_subjects['snr_loss'],
                     nbinsx=20,
                     marker_color='steelblue',
                     name='SNR Loss'
@@ -386,7 +405,8 @@ if st.session_state.temp_download_data is not None:
                 grade_colors = ['rgba(0,200,0,0.1)', 'rgba(255,200,0,0.1)',
                                 'rgba(255,130,0,0.1)', 'rgba(255,0,0,0.1)']
                 for i, (grade_name, low, high) in enumerate(SNR_LOSS_GRADES):
-                    display_high = min(high, hl_subject_df['snr_loss'].max() + 5) if high != float('inf') else hl_subject_df['snr_loss'].max() + 5
+                    max_loss = valid_subjects['snr_loss'].max() if not valid_subjects.empty else 20
+                    display_high = min(high, max_loss + 5) if high != float('inf') else max_loss + 5
                     fig_hist.add_vrect(
                         x0=low, x1=display_high,
                         fillcolor=grade_colors[i], line_width=0,
@@ -410,9 +430,14 @@ if st.session_state.temp_download_data is not None:
             sentence_sd = hl_results_df['snr_50'].std()
             low_slope_count = len(hl_results_df[hl_results_df['slope'] < SLOPE_THRESHOLD])
 
-            cols_quality = st.columns(3)
+            # 문장별 편차 계산 (중앙값 기준)
+            hl_median_snr50 = hl_results_df['snr_50'].median()
+            hl_results_df = hl_results_df.copy()
+            hl_results_df['deviation'] = (hl_results_df['snr_50'] - hl_median_snr50).abs()
+            sd_flag_fail_count = len(hl_results_df[hl_results_df['deviation'] >= SENTENCE_SD_THRESHOLD])
+
+            cols_quality = st.columns(4)
             with cols_quality[0]:
-                sd_status = "< 3.0 dB" if sentence_sd < SENTENCE_SD_THRESHOLD else ">= 3.0 dB"
                 sd_delta = f"{SENTENCE_SD_THRESHOLD - sentence_sd:.2f}"
                 st.metric(
                     "문장 간 SD",
@@ -421,11 +446,15 @@ if st.session_state.temp_download_data is not None:
                     delta_color="normal" if sentence_sd < SENTENCE_SD_THRESHOLD else "inverse"
                 )
             with cols_quality[1]:
-                st.metric("Slope < 3%/dB 문장 수", f"{low_slope_count} 개")
+                st.metric("편차 >= 3.0 dB 문장 수", f"{sd_flag_fail_count} 개")
             with cols_quality[2]:
-                total_hl_sentences = len(hl_results_df)
-                quality_pass = total_hl_sentences - low_slope_count
-                st.metric("Slope 통과 문장 수", f"{quality_pass} 개")
+                st.metric("Slope < 3%/dB 문장 수", f"{low_slope_count} 개")
+            with cols_quality[3]:
+                both_pass = len(hl_results_df[
+                    (hl_results_df['deviation'] < SENTENCE_SD_THRESHOLD) &
+                    (hl_results_df['slope'] >= SLOPE_THRESHOLD)
+                ])
+                st.metric("품질 검증 통과 문장 수", f"{both_pass} 개")
 
             if sentence_sd >= SENTENCE_SD_THRESHOLD:
                 st.warning(
@@ -438,8 +467,12 @@ if st.session_state.temp_download_data is not None:
             hl_display['snr_loss'] = (hl_display['snr_50'] - target).round(2)
             hl_display['snr_50'] = hl_display['snr_50'].round(2)
             hl_display['slope'] = hl_display['slope'].round(2)
+            hl_display['deviation'] = hl_display['deviation'].round(2)
             hl_display['slope_flag'] = hl_display['slope'].apply(
                 lambda s: 'Pass' if s >= SLOPE_THRESHOLD else 'Fail'
+            )
+            hl_display['sd_flag'] = hl_display['deviation'].apply(
+                lambda d: 'Pass' if d < SENTENCE_SD_THRESHOLD else 'Fail'
             )
 
             # 정상군 Pass 문장 목록과 교차
@@ -455,7 +488,11 @@ if st.session_state.temp_download_data is not None:
                 lambda sid: 'Pass' if sid in normal_pass_ids else 'Fail'
             )
             hl_display['final_select'] = hl_display.apply(
-                lambda row: 'Pass' if row['normal_pass'] == 'Pass' and row['slope_flag'] == 'Pass' else 'Fail',
+                lambda row: 'Pass' if (
+                    row['normal_pass'] == 'Pass' and
+                    row['slope_flag'] == 'Pass' and
+                    row['sd_flag'] == 'Pass'
+                ) else 'Fail',
                 axis=1
             )
 
@@ -467,6 +504,8 @@ if st.session_state.temp_download_data is not None:
                     "snr_50": "SNR-50 (dB)",
                     "snr_loss": "SNR Loss (dB)",
                     "slope": "기울기 (%/dB)",
+                    "deviation": "편차 (dB)",
+                    "sd_flag": "편차 검증",
                     "slope_flag": "기울기 검증",
                     "normal_pass": "정상군 Pass",
                     "final_select": "최종 선별",
@@ -495,9 +534,10 @@ if st.session_state.temp_download_data is not None:
                 **최종 선별 조건** (모두 충족해야 Pass):
                 1. 정상군 절대 기준 통과: SNR-50이 목표값({target} dB) +-{tolerance} dB 이내
                 2. 난청군 기울기 하한선: slope >= {SLOPE_THRESHOLD} %/dB (변별력 확보)
+                3. 난청군 편차 검증: 중앙값 기준 편차 < {SENTENCE_SD_THRESHOLD} dB (난이도 균등성)
 
                 **보조 지표**:
-                - 문장 간 SD: 난청군 내 문장별 SNR-50의 표준편차 (목표: < {SENTENCE_SD_THRESHOLD} dB)
+                - 문장 간 SD: 난청군 내 전체 문장 SNR-50의 표준편차 (목표: < {SENTENCE_SD_THRESHOLD} dB)
                 """)
 
             # 난청군 분석 결과 다운로드
@@ -556,13 +596,17 @@ if st.button(f"문장 {sentence_id_to_analyze}번 데이터 분석 실행"):
 
             st.header("3. 분석 결과")
 
+            # UI에서 설정한 값 사용 (설정 전이면 모듈 기본값)
+            ind_target = st.session_state.get('target', TARGET_SNR50)
+            ind_tolerance = st.session_state.get('tolerance', ABSOLUTE_TOLERANCE)
+
             with st.spinner("로지스틱 회귀 모델을 학습하고 SNR-50을 추정합니다..."):
                 result = estimate_snr50_for_sentence(processed_data)
 
                 # 절대 기준으로 등급 분류
                 if result['status'] == 'Success' and result.get('validity') != 'Extrapolated':
                     snr = result['snr_50']
-                    if abs(snr - TARGET_SNR50) <= ABSOLUTE_TOLERANCE:
+                    if abs(snr - ind_target) <= ind_tolerance:
                         result['validity'] = 'Pass'
                     else:
                         result['validity'] = 'Fail'
@@ -576,9 +620,9 @@ if st.button(f"문장 {sentence_id_to_analyze}번 데이터 분석 실행"):
                 # 절대 기준 판정 표시
                 validity = result.get('validity', '')
                 if validity == 'Pass':
-                    st.success(f"절대 기준 Pass: SNR-50 ({snr50_val:.2f} dB)이 목표값 ({TARGET_SNR50} dB) +-{ABSOLUTE_TOLERANCE} dB 이내")
+                    st.success(f"절대 기준 Pass: SNR-50 ({snr50_val:.2f} dB)이 목표값 ({ind_target} dB) +-{ind_tolerance} dB 이내")
                 elif validity == 'Fail':
-                    st.error(f"절대 기준 Fail: SNR-50 ({snr50_val:.2f} dB)이 목표값 ({TARGET_SNR50} dB) +-{ABSOLUTE_TOLERANCE} dB 범위 밖")
+                    st.error(f"절대 기준 Fail: SNR-50 ({snr50_val:.2f} dB)이 목표값 ({ind_target} dB) +-{ind_tolerance} dB 범위 밖")
                 elif validity == 'Extrapolated':
                     st.warning("Extrapolated: 추정된 SNR-50이 테스트 범위를 크게 벗어남 (신뢰도 낮음)")
             else:
@@ -591,13 +635,13 @@ if st.button(f"문장 {sentence_id_to_analyze}번 데이터 분석 실행"):
             if fig:
                 # 목표선 및 허용 범위 밴드 추가
                 fig.add_vrect(
-                    x0=TARGET_SNR50 - ABSOLUTE_TOLERANCE,
-                    x1=TARGET_SNR50 + ABSOLUTE_TOLERANCE,
+                    x0=ind_target - ind_tolerance,
+                    x1=ind_target + ind_tolerance,
                     fillcolor="blue", opacity=0.06, line_width=0
                 )
                 fig.add_vline(
-                    x=TARGET_SNR50, line_width=2, line_dash="dash", line_color="blue",
-                    annotation_text=f"목표: {TARGET_SNR50} dB", annotation_position="bottom right"
+                    x=ind_target, line_width=2, line_dash="dash", line_color="blue",
+                    annotation_text=f"목표: {ind_target} dB", annotation_position="bottom right"
                 )
                 st.plotly_chart(fig, use_container_width=True)
 

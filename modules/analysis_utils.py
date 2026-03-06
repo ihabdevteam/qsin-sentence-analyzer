@@ -277,10 +277,11 @@ def reclassify_with_absolute_criterion(
     return df_copy
 
 def classify_snr_loss_grade(snr_loss: float) -> str:
-    """SNR Loss 값에 따른 청력 손실 등급 분류"""
-    abs_loss = abs(snr_loss)
+    """SNR Loss 값에 따른 청력 손실 등급 분류 (음수 = 정상보다 좋음 → 정상)"""
+    if snr_loss <= 0:
+        return '정상'
     for grade, low, high in SNR_LOSS_GRADES:
-        if low <= abs_loss < high:
+        if low <= snr_loss < high:
             return grade
     return '고도'
 
@@ -353,14 +354,18 @@ def analyze_subjects(data: pd.DataFrame, target: float = TARGET_SNR50):
 
         if result['status'] == 'Success':
             snr_50 = result['snr_50']
+            validity = result.get('validity', 'Analyzed')
+            is_extrapolated = validity == 'Extrapolated'
+
             snr_loss = snr_50 - target
-            grade = classify_snr_loss_grade(snr_loss)
+            grade = None if is_extrapolated else classify_snr_loss_grade(snr_loss)
 
             results.append({
                 'patient_user_id': subject_id,
                 'snr_50': snr_50,
                 'snr_loss': snr_loss,
                 'grade': grade,
+                'validity': validity,
                 'slope': result['slope'],
                 'data_points': len(subject_data),
                 'sentences_tested': len(subject_data['sentence_id'].unique())
