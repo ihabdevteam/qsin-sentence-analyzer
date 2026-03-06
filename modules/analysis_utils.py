@@ -7,6 +7,20 @@ from sklearn.linear_model import LogisticRegression
 # 테스트 사용자 ID
 TEMP_USER_ID = "61720be3-19c6-4383-8563-85a6f2d4e795"
 
+# K-Quick-SIN 정상 규준
+TARGET_SNR50 = -4.16  # dB
+ABSOLUTE_TOLERANCE = 2.0  # +-2.0 dB
+SLOPE_THRESHOLD = 3.0  # %/dB 미만 시 변별력 부족
+SENTENCE_SD_THRESHOLD = 3.0  # dB, 문장 간 SD 상한
+
+# SNR Loss 등급 기준 (Killion, 1997 참고)
+SNR_LOSS_GRADES = [
+    ('정상', 0, 3),
+    ('경도', 3, 7),
+    ('중도', 7, 15),
+    ('고도', 15, float('inf'))
+]
+
 def _process_raw_data(data: list):
     if not data:
         return pd.DataFrame()
@@ -15,10 +29,17 @@ def _process_raw_data(data: list):
     for item in data:
         report_info = item.get('test_reports_qsin')
         if report_info and report_info.get('snr_level') is not None:
+            # patient_user 테이블에서 hearing_loss 추출
+            patient_info = report_info.get('patient_user')
+            hearing_loss = None
+            if isinstance(patient_info, dict):
+                hearing_loss = patient_info.get('hearing_loss')
+
             records.append({
                 'session_id': report_info.get('session_id'),
                 'user_id': report_info.get('user_id'),
                 'patient_user_id': report_info.get('patient_user_id'),
+                'hearing_loss': hearing_loss,
                 'sentence_id': item['index'],
                 'sentences': item['sentences'],
                 'total_score': item['total_score'],
@@ -26,7 +47,7 @@ def _process_raw_data(data: list):
                 'score': item['score'],
                 'snr_level': report_info['snr_level']
             })
-    
+
     if not records:
         return pd.DataFrame()
 
@@ -34,23 +55,24 @@ def _process_raw_data(data: list):
     df['num_keywords'] = df['sentences'].apply(lambda x: len(x) if isinstance(x, list) else 0)
     df = df[df['num_keywords'] > 0]
     df['correct_rate'] = df['total_score'] / df['num_keywords']
-    
+
     return df
 
 @st.cache_data(ttl=600)
 def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id: int | None = None):
     try:
-        page_size = 1000  # Supabase 기본 페이지 크기
+        page_size = 1000
 
         base_select = (
             "index, sentences, total_score, full_sentence, score,"
-            " test_reports_qsin!inner(snr_level, session_id, user_id, patient_user_id)"
+            " test_reports_qsin!inner(snr_level, session_id, user_id, patient_user_id,"
+            " patient_user(hearing_loss))"
         )
 
         def add_sentence_filter(q):
             return q.eq('index', sentence_id) if sentence_id is not None else q
 
-        def fetch_all_with_filter(apply_filter_fn):            
+        def fetch_all_with_filter(apply_filter_fn):
             all_rows = []
             page = 0
             while True:
@@ -77,7 +99,6 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
             return all_rows
 
         if use_dummy_prefix:
-            # dummy_ 접두사 세션 또는 특정 테스트 사용자 데이터 포함
             r1 = fetch_all_with_filter(
                 lambda q: q.ilike('test_reports_qsin.session_id', 'dummy_%')
             )
@@ -105,9 +126,9 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
         if df.empty:
             return pd.DataFrame()
 
-        # 반환 컬럼 정리
-        return df[['session_id', 'user_id', 'patient_user_id', 'sentence_id', 'full_sentence',
-                   'snr_level', 'score', 'total_score', 'correct_rate']]
+        return df[['session_id', 'user_id', 'patient_user_id', 'hearing_loss',
+                   'sentence_id', 'full_sentence', 'snr_level', 'score',
+                   'total_score', 'correct_rate']]
 
     except Exception as e:
         st.error(f"전체 데이터를 불러오는 중 오류가 발생했습니다: {e}")
@@ -119,7 +140,7 @@ def estimate_snr50_for_sentence(
     """
     단일 문장에 대한 데이터(snr_level, correct_rate)를 받아
     로지스틱 회귀 분석으로 SNR-50과 기울기를 추정합니다.
-    
+
     이 함수는 순수하게 수치적 분석(SNR-50, Slope)만 수행하며,
     등급(Validity) 분류는 수행하지 않습니다. (단, 데이터 범위 부족으로 인한 Extrapolated 여부는 판단)
     """
@@ -127,15 +148,14 @@ def estimate_snr50_for_sentence(
 
     if len(agg_data) < 3:
         return {'status': 'Error: Not Enough Data Points', 'snr_50': None, 'slope': None, 'model': None, 'plot_data': agg_data}
-    
+
     if agg_data['correct_rate'].min() == agg_data['correct_rate'].max():
         return {'status': 'Error: All Same Results', 'snr_50': None, 'slope': None, 'model': None, 'plot_data': agg_data}
 
     X = agg_data[['snr_level']]
     y = agg_data['correct_rate']
-    
+
     try:
-        # Deterministic resampling instead of random binomial to ensure reproducibility
         n_trials = 100
         X_resampled = np.repeat(agg_data['snr_level'].values, n_trials).reshape(-1, 1)
         y_resampled = []
@@ -156,23 +176,21 @@ def estimate_snr50_for_sentence(
         snr_50 = -intercept / coef
         slope = coef / 4 * 100
 
-        # 신뢰도 체크: 추정된 SNR-50이 테스트 범위를 너무 많이 벗어나는지 확인
         snr_min, snr_max = X['snr_level'].min(), X['snr_level'].max()
-        # 허용 범위를 테스트된 SNR 범위보다 5dB 더 넓게 설정
         valid_range_min = snr_min - 5
         valid_range_max = snr_max + 5
-        
+
         if not (valid_range_min <= snr_50 <= valid_range_max):
             validity = 'Extrapolated'
         else:
             validity = 'Analyzed'
 
         return {
-            'status': 'Success', 
-            'snr_50': float(snr_50), 
+            'status': 'Success',
+            'snr_50': float(snr_50),
             'slope': float(slope),
             'validity': validity,
-            'model': model, 
+            'model': model,
             'plot_data': agg_data
         }
 
@@ -184,17 +202,16 @@ def calculate_dynamic_ranges(analysis_results_df: pd.DataFrame) -> dict:
     분석 결과 데이터프레임에서 유효한 SNR-50 데이터를 추출하여
     IQR 기반 및 Mean/Std 기반의 동적 범위를 계산합니다.
     """
-    # Extrapolated가 아닌 유효한 SNR-50 데이터만 추출
     valid_snr_data = analysis_results_df[analysis_results_df['validity'] != 'Extrapolated']['snr_50']
-    
-    if not valid_snr_data.empty:
+
+    if not valid_snr_data.empty and len(valid_snr_data) > 1:
         stats = valid_snr_data.describe()
         mean = stats['mean']
         std = stats['std']
         q1 = stats['25%']
         q3 = stats['75%']
         iqr = q3 - q1
-        
+
         return {
             'iqr': {
                 'ideal': (q1, q3),
@@ -206,74 +223,92 @@ def calculate_dynamic_ranges(analysis_results_df: pd.DataFrame) -> dict:
             }
         }
     else:
-        # 데이터가 없을 경우 기본값 사용
         return {
             'iqr': {'ideal': (-8.56, -5.57), 'acceptable': (-10.05, -4.07)},
             'mean_std': {'ideal': (-8.13, -5.98), 'acceptable': (-9.21, -4.90)}
         }
 
-def reclassify_results_with_ranges(
+def reclassify_with_absolute_criterion(
     df: pd.DataFrame,
-    ideal_range: tuple[float, float],
-    acceptable_range: tuple[float, float]
+    target: float = TARGET_SNR50,
+    tolerance: float = ABSOLUTE_TOLERANCE,
+    ideal_range: tuple[float, float] | None = None,
+    acceptable_range: tuple[float, float] | None = None
 ) -> pd.DataFrame:
     """
-    주어진 ideal_range와 acceptable_range를 사용하여
-    데이터프레임의 'validity' 컬럼을 재계산합니다.
+    1차 절대 기준(Absolute Criterion) + 2차 상대 기준(Relative Sub-grade)으로 분류합니다.
+
+    - clinical_validity: Pass / Fail / Extrapolated
+    - sub_grade: Ideal / Acceptable / Marginal / - (Fail 또는 Extrapolated인 경우)
     """
     if df.empty:
         return df
 
+    df_copy = df.copy()
+
     def _classify(row):
         if row.get('validity') == 'Extrapolated':
-            return 'Extrapolated'
-        
+            return 'Extrapolated', '-'
+
         snr = row.get('snr_50')
         if snr is None:
-            return 'Error'
-            
-        if ideal_range[0] <= snr <= ideal_range[1]:
-            return 'Ideal'
-        elif acceptable_range[0] <= snr <= acceptable_range[1]:
-            return 'Acceptable'
-        else:
-            return 'Warning'
+            return 'Error', '-'
 
-    df_copy = df.copy()
-    df_copy['validity'] = df_copy.apply(_classify, axis=1)
+        if abs(snr - target) <= tolerance:
+            clinical = 'Pass'
+            if ideal_range and acceptable_range:
+                if ideal_range[0] <= snr <= ideal_range[1]:
+                    sub = 'Ideal'
+                elif acceptable_range[0] <= snr <= acceptable_range[1]:
+                    sub = 'Acceptable'
+                else:
+                    sub = 'Marginal'
+            else:
+                sub = '-'
+        else:
+            clinical = 'Fail'
+            sub = '-'
+
+        return clinical, sub
+
+    results = df_copy.apply(_classify, axis=1, result_type='expand')
+    df_copy['clinical_validity'] = results[0]
+    df_copy['sub_grade'] = results[1]
     return df_copy
 
-def analyze_all_sentences(data: pd.DataFrame):
+def classify_snr_loss_grade(snr_loss: float) -> str:
+    """SNR Loss 값에 따른 청력 손실 등급 분류"""
+    abs_loss = abs(snr_loss)
+    for grade, low, high in SNR_LOSS_GRADES:
+        if low <= abs_loss < high:
+            return grade
+    return '고도'
+
+def analyze_all_sentences(data: pd.DataFrame, label: str = ""):
     """
     전체 데이터에 대해 문장별로 SNR-50과 기울기를 분석합니다.
-    
-    순수하게 수치적 분석(SNR-50, Slope)에 집중하며,
-    최종 등급(Validity) 분류는 전체 통계 산출 후, reclassify_results_with_ranges를 통해 수행해야 합니다.
     """
     if data.empty:
         return pd.DataFrame()
-    
+
     results = []
     sentence_ids = data['sentence_id'].unique()
-    
+
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
+
     for i, sentence_id in enumerate(sentence_ids):
-        status_text.text(f"문장 {sentence_id}번 분석 중... ({i+1}/{len(sentence_ids)})")
+        status_text.text(f"{label}문장 {sentence_id}번 분석 중... ({i+1}/{len(sentence_ids)})")
         progress_bar.progress((i + 1) / len(sentence_ids))
-        
+
         sentence_data = data[data['sentence_id'] == sentence_id]
-        # 범위 인자 없이 호출하여 수치 계산에만 집중 (기본값으로 임시 등급이 매겨지나, 이후 재분류됨)
         result = estimate_snr50_for_sentence(sentence_data)
-        
+
         if result['status'] == 'Success':
             full_sentence = sentence_data['full_sentence'].iloc[0]
-            
-            # 총 점수와 평균 점수 계산
             total_score_sum = sentence_data['total_score'].sum()
             avg_score = sentence_data['total_score'].mean()
-            
+
             results.append({
                 'sentence_id': sentence_id,
                 'full_sentence': full_sentence,
@@ -285,10 +320,55 @@ def analyze_all_sentences(data: pd.DataFrame):
                 'data_points': len(sentence_data),
                 'snr_levels': len(sentence_data['snr_level'].unique())
             })
-    
+
     progress_bar.empty()
     status_text.empty()
-    
+
+    return pd.DataFrame(results)
+
+def analyze_subjects(data: pd.DataFrame, target: float = TARGET_SNR50):
+    """
+    난청군 피험자별 SNR-50 및 SNR Loss를 분석합니다.
+    각 피험자의 전체 문장 데이터를 풀링하여 SNR-50을 추정하고,
+    목표값과의 차이(SNR Loss)로 청력 손실 등급을 분류합니다.
+    """
+    if data.empty:
+        return pd.DataFrame()
+
+    results = []
+    subjects = data['patient_user_id'].dropna().unique()
+
+    if len(subjects) == 0:
+        return pd.DataFrame()
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for i, subject_id in enumerate(subjects):
+        status_text.text(f"피험자 {i+1}/{len(subjects)} 분석 중...")
+        progress_bar.progress((i + 1) / len(subjects))
+
+        subject_data = data[data['patient_user_id'] == subject_id]
+        result = estimate_snr50_for_sentence(subject_data)
+
+        if result['status'] == 'Success':
+            snr_50 = result['snr_50']
+            snr_loss = snr_50 - target
+            grade = classify_snr_loss_grade(snr_loss)
+
+            results.append({
+                'patient_user_id': subject_id,
+                'snr_50': snr_50,
+                'snr_loss': snr_loss,
+                'grade': grade,
+                'slope': result['slope'],
+                'data_points': len(subject_data),
+                'sentences_tested': len(subject_data['sentence_id'].unique())
+            })
+
+    progress_bar.empty()
+    status_text.empty()
+
     return pd.DataFrame(results)
 
 def display_analysis_metrics(snr50_val, slope_val):
@@ -317,15 +397,14 @@ def create_psychometric_plot(processed_data, result, sentence_id=None, title_suf
     if processed_data.empty:
         st.warning("시각화할 데이터가 없습니다.")
         return None
-    
+
     model = result.get('model')
     snr50_val = result.get('snr_50')
     plot_data = result.get('plot_data')
     validity = result.get('validity', 'Good')
-    
+
     fig = go.Figure()
-    
-    # 1. Box Plot으로 전체 데이터 분포 표시
+
     fig.add_trace(go.Box(
         x=processed_data['snr_level'],
         y=processed_data['correct_rate'],
@@ -336,7 +415,6 @@ def create_psychometric_plot(processed_data, result, sentence_id=None, title_suf
         visible='legendonly'
     ))
 
-    # 2. Scatter Plot으로 평균 정답률 표시
     if not plot_data.empty:
         fig.add_trace(go.Scatter(
             x=plot_data['snr_level'],
@@ -347,17 +425,15 @@ def create_psychometric_plot(processed_data, result, sentence_id=None, title_suf
             marker=dict(size=10, color='dodgerblue', symbol='circle')
         ))
 
-    # 3. 로지스틱 회귀 곡선 및 SNR-50 라인 표시
     if model and snr50_val is not None:
         agg_plot_data = processed_data.groupby('snr_level')['correct_rate'].mean().reset_index()
         x_range = np.linspace(agg_plot_data['snr_level'].min() - 5, agg_plot_data['snr_level'].max() + 5, 100)
         y_curve = model.predict_proba(x_range.reshape(-1, 1))[:, 1]
-        
+
         fig.add_trace(go.Scatter(
             x=x_range, y=y_curve, mode='lines', name='로지스틱 회귀 곡선', line=dict(color='red', width=2)
         ))
 
-        # Validity에 따라 SNR-50 라인 스타일 변경
         if validity == 'Extrapolated':
             line_color = "grey"
             annotation_text = f"SNR-50: {snr50_val:.2f} dB (추정치)"
@@ -370,14 +446,13 @@ def create_psychometric_plot(processed_data, result, sentence_id=None, title_suf
         fig.add_vline(x=snr50_val, line_width=2, line_dash=line_dash, line_color=line_color,
                     annotation_text=annotation_text, annotation_position="top right")
         fig.add_hline(y=0.5, line_width=2, line_dash="dash", line_color="green")
-    
-    # 제목 설정
+
     if sentence_id:
         full_sentence_text = processed_data['full_sentence'].iloc[0]
         title = f"문장 {sentence_id}번 : \"{full_sentence_text}\""
     else:
         title = f"전체 데이터 분석 결과{title_suffix}"
-    
+
     fig.update_layout(
         title=title,
         xaxis_title="SNR Level (dB)",
@@ -385,7 +460,7 @@ def create_psychometric_plot(processed_data, result, sentence_id=None, title_suf
         yaxis_range=[-0.05, 1.05],
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
     )
-    
+
     return fig
 
 def create_combined_psychometric_plot(
@@ -400,13 +475,6 @@ def create_combined_psychometric_plot(
 ):
     """
     여러 문장(sentence_id)의 심리물리 곡선을 하나의 Figure에 겹쳐서 표시합니다.
-
-    - sentence_ids: 겹쳐서 표시할 문장 ID 목록
-    - include_logistic: 각 문장에 대해 로지스틱 회귀 곡선을 함께 표시할지 여부
-    - precomputed_results: 사전 계산된 분석 결과 (snr_50, slope, validity 포함)
-    - snr_range: SNR 데이터 범위 (min, max)
-    - ideal_range: Ideal 등급의 SNR 범위 (min, max)
-    - acceptable_range: Acceptable 등급의 SNR 범위 (min, max)
     """
     if not sentence_ids:
         st.warning("시각화할 데이터가 없습니다.")
@@ -414,71 +482,58 @@ def create_combined_psychometric_plot(
 
     fig = go.Figure()
 
-    # 전역 x 구간 설정
     global_min, global_max = snr_range
     x_range_global = np.linspace(global_min - 5, global_max + 5, 100)
 
-    # 표(사전 계산) 결과를 빠르게 찾기 위한 맵 구성
     results_map = {}
     if precomputed_results is not None and not precomputed_results.empty:
-        # 기대 컬럼: sentence_id, snr_50, slope, validity
         for _, row in precomputed_results.iterrows():
             sid = int(row['sentence_id']) if not pd.isna(row['sentence_id']) else None
             if sid is None:
                 continue
             results_map[sid] = {
                 'snr_50': row.get('snr_50', None),
-                'slope': row.get('slope', None),  # %/dB
+                'slope': row.get('slope', None),
                 'validity': row.get('validity', 'Good'),
             }
 
-    # 선택한 문장마다 로지스틱 곡선 추가
     for sid in sentence_ids:
         if include_logistic:
-            # 표의 snr_50, slope를 그대로 사용해 로지스틱 곡선을 복원 (재학습 없음)
             r = results_map.get(sid)
             if r is not None and r.get('snr_50') is not None and r.get('slope') is not None:
                 validity = r.get('validity', 'Warning')
-                
-                # Extrapolated 등급은 그래프 표시에서 제외
+
                 if validity == 'Extrapolated':
                     continue
 
                 snr50 = float(r['snr_50'])
-                slope_pct_per_db = float(r['slope'])  # %/dB
-                
-                # Validity와 SNR-50 값에 따른 곡선 색상 결정 (gradient 적용)
+                slope_pct_per_db = float(r['slope'])
+
                 if validity == 'Ideal':
-                    # Ideal 범위
                     span = ideal_range[1] - ideal_range[0]
                     normalized_pos = (snr50 - ideal_range[0]) / span if span > 0 else 0.5
                     normalized_pos = max(0.0, min(1.0, normalized_pos))
-                    
-                    color_val = int(180 * (1 - normalized_pos)) # 0(녹색) ~ 180(청록)
+                    color_val = int(180 * (1 - normalized_pos))
                     curve_color = f'hsl({color_val}, 70%, 45%)'
                 elif validity == 'Acceptable':
-                    # Acceptable 범위
                     span = acceptable_range[1] - acceptable_range[0]
                     normalized_pos = (snr50 - acceptable_range[0]) / span if span > 0 else 0.5
                     normalized_pos = max(0.0, min(1.0, normalized_pos))
-                    
-                    color_val = 30 + int(30 * (1 - normalized_pos)) # 30(주황) ~ 60(노랑)
+                    color_val = 30 + int(30 * (1 - normalized_pos))
                     curve_color = f'hsl({color_val}, 80%, 50%)'
                 elif validity == 'Warning':
-                    # Warning 범위: 그 외
                     if snr50 > acceptable_range[1]:
-                        normalized_pos = min((snr50 - acceptable_range[1]) / 5.0, 1.0) # 5dB 범위까지
+                        normalized_pos = min((snr50 - acceptable_range[1]) / 5.0, 1.0)
                     else:
                         normalized_pos = min((acceptable_range[0] - snr50) / 5.0, 1.0)
-                    color_val = int(30 * normalized_pos) # 0(빨강)에 가까워짐
+                    color_val = int(30 * normalized_pos)
                     curve_color = f'hsl({color_val}, 90%, 50%)'
+                elif validity == 'Fail':
+                    curve_color = 'rgba(180, 180, 180, 0.4)'
                 else:
-                    # Fallback
                     curve_color = 'rgba(128, 128, 128, 0.5)'
-                
-                coef = (slope_pct_per_db / 100.0) * 4.0  # 로지스틱 기울기와의 변환
-                # p(x) = 1 / (1 + exp(-(a + b*x)))
-                # snr_50 = -a/b => a = -b*snr_50
+
+                coef = (slope_pct_per_db / 100.0) * 4.0
                 a = -coef * snr50
                 y_curve = 1.0 / (1.0 + np.exp(-(a + coef * x_range_global)))
 
@@ -491,14 +546,15 @@ def create_combined_psychometric_plot(
                     showlegend=show_legend
                 ))
 
-                # 유효성 및 2dB 근접성에 따라 마커 색상 결정
                 color_map = {
                     'Ideal': 'green',
                     'Acceptable': 'orange',
                     'Warning': 'red',
+                    'Marginal': 'goldenrod',
+                    'Fail': 'gray',
                     'Extrapolated': 'grey'
                 }
-                marker_color = color_map.get(validity, 'purple') # 기본값
+                marker_color = color_map.get(validity, 'purple')
 
                 hover_text = (
                     f"문장 {sid} SNR-50: %{{x:.2f}} dB<br>"
@@ -516,9 +572,7 @@ def create_combined_psychometric_plot(
                     hovertemplate=hover_text
                 ))
 
-    title = (
-        "전체 문장들에 대한 Psychometric Function"
-    )
+    title = "전체 문장들에 대한 Psychometric Function"
 
     fig.update_layout(
         title=title,
@@ -528,8 +582,7 @@ def create_combined_psychometric_plot(
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
         hovermode='closest'
     )
-    
-    # WebGL 렌더링 활성화 (대량 데이터 성능 최적화)
+
     fig.update_traces(line=dict(width=1.5), selector=dict(mode='lines'))
-    
+
     return fig
