@@ -89,6 +89,7 @@ if submit_button:
             SNR_GRID = [-5, 0, 5]
 
             def logistic_p(snr: float, center_db: float, slope_pct_per_db: float = 10.0) -> float:
+                """주어진 SNR에서 로지스틱 함수 기반 정답 확률을 계산한다."""
                 # slope(%/dB) -> coef b, intercept a = -b*center
                 b = (slope_pct_per_db / 100.0) * 4.0
                 a = -b * center_db
@@ -96,6 +97,7 @@ if submit_button:
                 return 1.0 / (1.0 + (2.718281828459045 ** (-z)))
 
             def sample_score_from_p(p: float, h_base: float = 0.1):
+                """정답 확률 p로부터 가중 랜덤 점수(0, 0.5, 1)를 샘플링한다."""
                 # 분포: w1=(1-h)p, w05=2hp, w0=1-w1-w05; h는 안정성을 위해 min으로 캡핑
                 p = max(0.0, min(1.0, p))
                 if p == 0.0:
