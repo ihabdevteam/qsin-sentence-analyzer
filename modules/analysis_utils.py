@@ -22,6 +22,7 @@ SNR_LOSS_GRADES = [
 ]
 
 def _process_raw_data(data: list):
+    """원시 Supabase 응답 데이터를 정제하여 분석용 DataFrame으로 변환한다."""
     if not data:
         return pd.DataFrame()
 
@@ -60,6 +61,7 @@ def _process_raw_data(data: list):
 
 @st.cache_data(ttl=600)
 def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id: int | None = None):
+    """Supabase에서 전체 문장 데이터를 페이징 조회하여 DataFrame으로 반환한다."""
     try:
         page_size = 1000
 
@@ -70,9 +72,11 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
         )
 
         def add_sentence_filter(q):
+            """sentence_id가 지정된 경우 쿼리에 필터를 추가한다."""
             return q.eq('index', sentence_id) if sentence_id is not None else q
 
         def fetch_all_with_filter(apply_filter_fn):
+            """필터 함수를 적용하여 모든 페이지의 데이터를 조회한다."""
             all_rows = []
             page = 0
             while True:
@@ -247,6 +251,7 @@ def reclassify_with_absolute_criterion(
     df_copy = df.copy()
 
     def _classify(row):
+        """행 단위로 절대/상대 기준에 따라 clinical_validity와 sub_grade를 반환한다."""
         if row.get('validity') == 'Extrapolated':
             return 'Extrapolated', '-'
 
