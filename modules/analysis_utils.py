@@ -87,6 +87,14 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
                 query = add_sentence_filter(query)
                 # 실험 3 이후 데이터는 문장별 SNR을 쓰므로(report.snr_level=0) 이 페이지의
                 # 세션 단위 SNR 전제와 맞지 않는다. experiment 태그가 없는 데이터만 사용한다.
+                #
+                # 주의: 이 필터는 "태그가 없으면 실험 1-2"라는 불변식에 의존하고, 태그를
+                # 붙이는 쪽은 이 저장소가 아니라 quick-sin 데스크톱 앱이다. 이 저장소의
+                # pages/1_Generator.py는 experiment를 보내지 않으므로, dummy_ 접두사가 아닌
+                # 세션으로 생성한 데이터는 실험 1-2로 분류된다. 새 실험(실험 4 등)을 추가할
+                # 때 앱이 experiment 태그를 반드시 보내도록 확인해야 하며, 그러지 않으면
+                # 같은 오염이 재발한다. (2026-10-07 확인: 태그 없는 94건은 전부 2026-07-16
+                # 이전, 실험 3 수집 시작 이후 태그 없는 리포트는 0건으로 불변식 성립)
                 query = query.is_('test_reports_qsin.experiment', 'null')
                 query = apply_filter_fn(query)
 
