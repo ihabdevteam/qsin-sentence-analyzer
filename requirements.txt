@@ -2,6 +2,7 @@ streamlit
 supabase
 pandas
 numpy
+scipy
 scikit-learn
 plotly
 streamlit-option-menu
