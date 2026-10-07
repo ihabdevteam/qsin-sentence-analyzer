@@ -129,6 +129,20 @@ df_sel = df[df['participant_no'].isin(sel_parts)]
 cells = build_cell_table(df_sel)
 matrix_full = cell_matrix(cells, 'snr50')
 
+# 사다리 6단계를 다 제시하지 못한 셀은 감산식이 성립하지 않아 역치가 NaN이다
+incomplete = cells[~cells['is_complete']]
+if not incomplete.empty:
+    st.error(
+        f"**불완전한 셀 {len(incomplete)}개** — 문장이 6개({len(LADDER)}단계) 미달인 셀은 "
+        "감산식이 성립하지 않아 SNR-50을 계산하지 않았습니다(빠진 문장을 오답으로 "
+        "취급하면 역치가 최대 7.8 dB까지 왜곡됩니다). 아래 분석에서 제외됩니다."
+    )
+    st.dataframe(
+        incomplete[['participant_no', 'list_no', 'sentences', 'snr_levels',
+                    'total_correct', 'presentation_order', 'session_id']],
+        hide_index=True, width='stretch'
+    )
+
 # ============================================================
 # 1. 데이터 무결성 검증
 # ============================================================
@@ -174,6 +188,12 @@ summary = summary_criteria(matrix_full, anova)
 summary_view = summary.copy()
 summary_view['충족'] = summary_view['충족'].map(_pass_icon)
 st.dataframe(summary_view, hide_index=True, width='stretch')
+st.caption(
+    "ANOVA 기준(p > 0.05)은 로드맵에 명시된 기준을 그대로 적용한 것입니다. 다만 "
+    "**차이를 검출하지 못한 것이 등가성의 증거는 아닙니다** — 표본이 작으면 실제로 "
+    "리스트 간 차이가 있어도 이 기준을 통과합니다. 등가성을 주장하려면 허용 한계를 "
+    "정한 등가성 검정(TOST 등)이 필요합니다."
+)
 
 if anova.get('status') == 'Success':
     n_total = matrix_full.shape[0]
@@ -245,7 +265,16 @@ st.dataframe(
 st.subheader("리스트별 SNR-50 (평균 ± 95% CI)")
 fp = list_stats.sort_values('snr50_mean')
 grand_mean = float(np.nanmean(matrix_full.values))
-ci = anova['ci_half'] if anova.get('status') == 'Success' else fp['snr50_sem'] * 1.96
+
+# ANOVA의 통합 오차항은 완전 케이스만으로 계산되므로, 결측 셀이 있으면 각 리스트의
+# 평균과 신뢰구간이 서로 다른 표본을 가리키게 된다. 그럴 때는 리스트별 SEM을 쓴다.
+all_complete = anova.get('status') == 'Success' and anova['n'] == matrix_full.shape[0]
+if all_complete:
+    ci = np.full(len(fp), anova['ci_half'])
+    ci_note = "통합 오차항(MS_error) 기준"
+else:
+    ci = (fp['snr50_sem'] * 1.96).to_numpy()
+    ci_note = "리스트별 SEM 기준 (결측 셀이 있어 통합 오차항을 쓰지 않음)"
 
 fig = go.Figure()
 fig.add_vrect(x0=grand_mean - dev_limit, x1=grand_mean + dev_limit,
@@ -258,9 +287,7 @@ fig.add_vline(x=NORM_SNR50, line_dash="dot", line_color="#8b9b9e",
               annotation_text=f"K-QuickSIN 규준 {NORM_SNR50:.2f}", annotation_position="top right")
 fig.add_trace(go.Scatter(
     x=fp['snr50_mean'], y=[f"리스트 {int(v)}" for v in fp['list_no']],
-    error_x=dict(type='data',
-                 array=np.full(len(fp), ci) if np.isscalar(ci) else np.asarray(ci),
-                 color="#5d7076", thickness=1.2, width=4),
+    error_x=dict(type='data', array=ci, color="#5d7076", thickness=1.2, width=4),
     mode='markers',
     marker=dict(size=10,
                 color=[ACCENT_OK if ok else ACCENT_NG for ok in fp['pass_all']],
@@ -274,6 +301,7 @@ fig.update_layout(height=max(380, 24 * len(fp)), margin=dict(l=10, r=10, t=30, b
                   xaxis_title="SNR-50 (dB) — 왼쪽이 쉬운 리스트", yaxis_title=None,
                   showlegend=False)
 st.plotly_chart(fig)
+st.caption(f"오차 막대는 95% 신뢰구간 — {ci_note}.")
 
 # --- 히트맵 ---
 st.subheader("참가자 × 리스트 SNR-50 히트맵")
@@ -372,20 +400,37 @@ oe = order_effect(cells)
 if oe.get('status') != 'Success':
     st.warning(f"순서 효과를 계산할 수 없습니다: {oe.get('status')}")
 else:
+    sig = oe['p'] is not None and oe['p'] < 0.05
     o1, o2, o3, o4 = st.columns(4)
-    o1.metric("상관 r", f"{oe['r']:+.3f}", help="참가자 내 중심화한 제시 위치와 SNR-50의 상관")
-    o2.metric("p", f"{oe['p']:.4f}",
-              delta="유의" if oe['p'] < 0.05 else "비유의",
-              delta_color="inverse" if oe['p'] < 0.05 else "normal")
-    o3.metric("기울기", f"{oe['slope_db_per_position']:+.3f} dB/위치")
-    o4.metric("18리스트 누적", f"{oe['total_db_over_lists']:+.2f} dB")
+    o1.metric("기울기", f"{oe['slope_db_per_position']:+.3f} dB/위치",
+              help="참가자별 회귀 기울기의 평균. 음수 = 뒤로 갈수록 역치가 낮아짐(개선)")
+    o2.metric("18리스트 누적", f"{oe['total_db_over_lists']:+.2f} dB")
+    o3.metric("p (참가자 수준)", "–" if oe['p'] is None else f"{oe['p']:.4f}",
+              delta=("유의" if sig else "비유의") if oe['p'] is not None else None,
+              delta_color="inverse" if sig else "normal",
+              help=(f"참가자별 기울기 {oe['n_participants']}개의 1표본 t검정"
+                    + (f" (t={oe['t']:.2f})" if oe['t'] is not None else "")))
+    o4.metric("기울기 부호", f"음 {oe['n_negative']} / 양 {oe['n_positive']}",
+              help=f"상관 r={oe['r']:+.3f} (셀 단위, 효과 크기 참고용)")
 
-    if oe['p'] < 0.05:
+    if sig:
         st.warning(
             f"**순서 효과 유의** — 검사를 진행할수록 역치가 "
             f"{abs(oe['total_db_over_lists']):.2f} dB 변합니다(연습 효과). "
             "Williams 설계가 이를 상쇄하려면 참가자 수가 리스트 수의 배수여야 합니다."
         )
+    elif oe['p'] is not None:
+        st.info(
+            f"**순서 효과 비유의** — 기울기는 {oe['slope_db_per_position']:+.3f} dB/위치"
+            f"(18리스트 누적 {oe['total_db_over_lists']:+.2f} dB)로 경향은 보이지만, "
+            f"참가자 수준 검정에서는 유의하지 않습니다(p={oe['p']:.3f}, "
+            f"{oe['n_participants']}명 중 음수 기울기 {oe['n_negative']}명). "
+            "참가자가 늘면 판단이 달라질 수 있습니다."
+        )
+    st.caption(
+        f"셀 단위 상관의 p값(p={oe['p_pooled']:.4f})은 한 참가자가 18셀을 만드는 구조를 "
+        "무시해 불확실성을 과소평가합니다. 판단은 참가자 수준 검정을 기준으로 하세요."
+    )
 
     bal = oe['balance'].copy()
     bal['편차'] = bal['mean_position'] - oe['ideal_position']

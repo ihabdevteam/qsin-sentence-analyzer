@@ -125,7 +125,13 @@ def get_exp3_data(_supabase_client, experiment: str = 'exp3'):
 
 
 def build_cell_table(df: pd.DataFrame) -> pd.DataFrame:
-    """문장 단위 데이터를 (참가자 x 리스트) 셀 단위로 집계한다."""
+    """문장 단위 데이터를 (참가자 x 리스트) 셀 단위로 집계한다.
+
+    감산식은 사다리 6단계를 모두 제시했다는 전제에서만 성립한다. 중도 포기 등으로
+    문장이 빠진 셀의 점수를 그대로 환산하면 빠진 문장을 오답으로 취급하는 셈이 되어
+    역치가 크게 왜곡된다(쉬운 문장 3개가 빠지면 +7.8 dB까지 치우침). 따라서 불완전한
+    셀은 snr50을 NaN으로 두고, is_complete로 구분한다.
+    """
     if df.empty:
         return pd.DataFrame()
 
@@ -138,7 +144,11 @@ def build_cell_table(df: pd.DataFrame) -> pd.DataFrame:
              presentation_order=('presentation_order', 'first'),
              session_id=('session_id', 'first'))
     )
-    cells['snr50'] = snr50_from_total(cells['total_correct'])
+    cells['is_complete'] = (
+        (cells['sentences'] == SENTENCES_PER_LIST) & (cells['snr_levels'] == len(LADDER))
+    )
+    cells['snr50'] = np.where(cells['is_complete'],
+                              snr50_from_total(cells['total_correct']), np.nan)
     return cells
 
 
@@ -356,7 +366,13 @@ def posthoc_vs_grand(list_stats: pd.DataFrame, anova: dict) -> pd.DataFrame:
 # 순서(연습) 효과
 # ============================================================
 def order_effect(cells: pd.DataFrame) -> dict:
-    """제시 위치와 성적의 관계를 참가자 내 중심화하여 추정한다."""
+    """제시 위치와 성적의 관계를 추정한다.
+
+    유의성 판단은 참가자별 회귀 기울기를 구해 1표본 t검정하는 방식(참가자 수준)을
+    쓴다. 셀을 독립 관측으로 보는 상관계수 p값은 한 참가자가 18셀을 만드는 구조를
+    무시해 불확실성을 과소평가한다(실측: p=.001 → 참가자 수준 p=.080). 상관계수는
+    효과 크기를 보여주는 기술 통계로만 남긴다.
+    """
     df = cells.dropna(subset=['presentation_order', 'snr50', 'participant_no']).copy()
     if df.empty or df['participant_no'].nunique() < 2:
         return {'status': 'Error: Not Enough Data'}
@@ -367,8 +383,20 @@ def order_effect(cells: pd.DataFrame) -> dict:
     if df['order_c'].std(ddof=1) == 0:
         return {'status': 'Error: No Order Variation'}
 
-    r, p = stats.pearsonr(df['order_c'], df['snr50_c'])
+    r, p_pooled = stats.pearsonr(df['order_c'], df['snr50_c'])
     slope = float(np.polyfit(df['order_c'], df['snr50_c'], 1)[0])
+
+    # 참가자별 기울기 → 1표본 t검정 (참가자를 분석 단위로)
+    slopes = []
+    for _, g in df.groupby('participant_no'):
+        if g['presentation_order'].nunique() > 2:
+            slopes.append(float(np.polyfit(g['presentation_order'].astype(float), g['snr50'], 1)[0]))
+    slopes = np.asarray(slopes, dtype=float)
+    if len(slopes) >= 2:
+        t_stat, p_clustered = stats.ttest_1samp(slopes, 0.0)
+        t_stat, p_clustered = float(t_stat), float(p_clustered)
+    else:
+        t_stat, p_clustered = None, None
 
     # 카운터밸런싱 균형: 리스트별 평균 제시 위치 (완전 균형이면 모두 (NUM_LISTS+1)/2)
     balance = (df.groupby('list_no')['presentation_order'].mean()
@@ -377,7 +405,13 @@ def order_effect(cells: pd.DataFrame) -> dict:
 
     return {
         'status': 'Success',
-        'r': float(r), 'p': float(p),
+        'r': float(r),
+        'p_pooled': float(p_pooled),          # 기술 통계용. 독립성 가정이 깨져 과소평가됨
+        'p': p_clustered,                     # 판단 기준: 참가자 수준 검정
+        't': t_stat,
+        'n_participants': int(len(slopes)),
+        'n_negative': int((slopes < 0).sum()),
+        'n_positive': int((slopes > 0).sum()),
         'slope_db_per_position': slope,
         'total_db_over_lists': slope * (NUM_LISTS - 1),
         'balance': balance,
