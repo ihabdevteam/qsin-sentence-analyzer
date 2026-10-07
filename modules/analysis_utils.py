@@ -85,6 +85,9 @@ def get_all_sentence_data(_supabase_client, use_dummy_prefix: bool, sentence_id:
 
                 query = _supabase_client.table('score_qsin').select(base_select)
                 query = add_sentence_filter(query)
+                # 실험 3 이후 데이터는 문장별 SNR을 쓰므로(report.snr_level=0) 이 페이지의
+                # 세션 단위 SNR 전제와 맞지 않는다. experiment 태그가 없는 데이터만 사용한다.
+                query = query.is_('test_reports_qsin.experiment', 'null')
                 query = apply_filter_fn(query)
 
                 resp = query.range(start_index, end_index).execute()
