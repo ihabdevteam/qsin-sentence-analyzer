@@ -264,7 +264,7 @@ if st.session_state.temp_download_data is not None:
                     "data_points": "데이터 수",
                     "snr_levels": "SNR 레벨 수"
                 },
-                use_container_width=True
+                width='stretch'
             )
 
             analysis_csv = display_df.to_csv(index=False).encode('utf-8-sig')
@@ -386,7 +386,7 @@ if st.session_state.temp_download_data is not None:
                         "data_points": "데이터 수",
                         "sentences_tested": "테스트 문장 수"
                     },
-                    use_container_width=True
+                    width='stretch'
                 )
 
                 # SNR Loss 분포 히스토그램
@@ -512,7 +512,7 @@ if st.session_state.temp_download_data is not None:
                     "data_points": "데이터 수",
                     "snr_levels": "SNR 레벨 수"
                 },
-                use_container_width=True
+                width='stretch'
             )
 
             # 최종 선별 요약
