@@ -77,6 +77,9 @@ def get_exp3_data(_supabase_client, experiment: str = 'exp3'):
     """실험 3 문장 단위 데이터를 조회하여 long 형식 DataFrame으로 반환한다.
 
     한 행 = 참가자 1명이 리스트 1개 안에서 들은 문장 1개.
+
+    조회 실패 시 예외를 그대로 올린다. st.cache_data는 예외를 캐시하지 않으므로,
+    여기서 삼키고 빈 DataFrame을 반환하면 일시적 실패가 TTL 동안 정상 결과로 남는다.
     """
     page_size = 1000
     base_select = (
@@ -85,64 +88,61 @@ def get_exp3_data(_supabase_client, experiment: str = 'exp3'):
         " presentation_order, test_datetime, experiment)"
     )
 
-    try:
-        rows = []
-        page = 0
-        while True:
-            start = page * page_size
-            resp = (
-                _supabase_client.table('score_qsin')
-                .select(base_select)
-                .eq('test_reports_qsin.experiment', experiment)
-                .range(start, start + page_size - 1)
-                .execute()
-            )
-            batch = resp.data or []
-            if not batch:
-                break
-            rows.extend(batch)
-            if len(batch) < page_size:
-                break
-            page += 1
+    rows = []
+    page = 0
+    while True:
+        start = page * page_size
+        resp = (
+            _supabase_client.table('score_qsin')
+            .select(base_select)
+            .eq('test_reports_qsin.experiment', experiment)
+            # 정렬 없는 range 페이징은 페이지 간 행이 겹치거나 빠질 수 있다
+            .order('id')
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = resp.data or []
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        page += 1
 
-        if not rows:
-            return pd.DataFrame()
-
-        records = []
-        for item in rows:
-            rep = item.get('test_reports_qsin') or {}
-            records.append({
-                'participant_no': rep.get('participant_no'),
-                'session_id': rep.get('session_id'),
-                'test_datetime': rep.get('test_datetime'),
-                'list_no': rep.get('sound_set'),            # sound_set을 리스트 번호로 재활용
-                'presentation_order': rep.get('presentation_order'),
-                'sentence_id': item.get('index'),
-                'trial_index': item.get('trial_index'),
-                'snr_level': item.get('snr_level'),
-                'total_score': item.get('total_score'),
-                'score': item.get('score'),
-                'sentences': item.get('sentences'),
-                'full_sentence': item.get('full_sentence'),
-            })
-
-        df = pd.DataFrame(records)
-        df = df[~df['session_id'].isin(EXCLUDED_SESSIONS.keys())]
-        if df.empty:
-            return pd.DataFrame()
-        for col in ['participant_no', 'list_no', 'presentation_order', 'trial_index']:
-            df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
-        for col in ['snr_level', 'total_score']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df['num_keywords'] = df['sentences'].apply(lambda v: len(v) if isinstance(v, list) else 0)
-        df['correct_rate'] = np.where(df['num_keywords'] > 0,
-                                      df['total_score'] / df['num_keywords'], np.nan)
-        return df.sort_values(['participant_no', 'presentation_order', 'trial_index'],
-                              ignore_index=True)
-
-    except Exception as e:
-        st.error(f"실험 3 데이터를 불러오는 중 오류가 발생했습니다: {e}")
+    if not rows:
         return pd.DataFrame()
+
+    records = []
+    for item in rows:
+        rep = item.get('test_reports_qsin') or {}
+        records.append({
+            'participant_no': rep.get('participant_no'),
+            'session_id': rep.get('session_id'),
+            'test_datetime': rep.get('test_datetime'),
+            'list_no': rep.get('sound_set'),            # sound_set을 리스트 번호로 재활용
+            'presentation_order': rep.get('presentation_order'),
+            'sentence_id': item.get('index'),
+            'trial_index': item.get('trial_index'),
+            'snr_level': item.get('snr_level'),
+            'total_score': item.get('total_score'),
+            'score': item.get('score'),
+            'sentences': item.get('sentences'),
+            'full_sentence': item.get('full_sentence'),
+        })
+
+    df = pd.DataFrame(records)
+    df = df[~df['session_id'].isin(EXCLUDED_SESSIONS.keys())]
+    if df.empty:
+        return pd.DataFrame()
+    for col in ['participant_no', 'list_no', 'presentation_order', 'trial_index']:
+        df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
+    for col in ['snr_level', 'total_score']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df['num_keywords'] = df['sentences'].apply(lambda v: len(v) if isinstance(v, list) else 0)
+    df['correct_rate'] = np.where(df['num_keywords'] > 0,
+                                  df['total_score'] / df['num_keywords'], np.nan)
+    return df.sort_values(['participant_no', 'presentation_order', 'trial_index'],
+                          ignore_index=True)
 
 
 def build_cell_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -160,13 +160,19 @@ def build_cell_table(df: pd.DataFrame) -> pd.DataFrame:
         df.dropna(subset=['participant_no', 'list_no'])
         .groupby(['participant_no', 'list_no'], as_index=False)
         .agg(total_correct=('total_score', 'sum'),
+             rows=('sentence_id', 'size'),
              sentences=('sentence_id', 'nunique'),
              snr_levels=('snr_level', 'nunique'),
+             ladder_ok=('snr_level', lambda v: sorted(pd.to_numeric(v, errors='coerce').tolist())
+                        == sorted(LADDER)),
              presentation_order=('presentation_order', 'first'),
              session_id=('session_id', 'first'))
     )
+    # 중복 저장된 행이 합산되지 않도록 '정확히 6행, 사다리 각 단계 1개'를 요구한다
     cells['is_complete'] = (
-        (cells['sentences'] == SENTENCES_PER_LIST) & (cells['snr_levels'] == len(LADDER))
+        (cells['rows'] == SENTENCES_PER_LIST)
+        & (cells['sentences'] == SENTENCES_PER_LIST)
+        & cells['ladder_ok'].astype(bool)
     )
     cells['snr50'] = np.where(cells['is_complete'],
                               snr50_from_total(cells['total_correct']), np.nan)
@@ -345,7 +351,10 @@ def repeated_measures_anova(matrix: pd.DataFrame) -> dict:
 
     ms_list, ms_err = ss_list / df_list, ss_err / df_err
     f_val = ms_list / ms_err if ms_err > 0 else np.nan
-    p_val = float(stats.f.sf(f_val, df_list, df_err)) if np.isfinite(f_val) else None
+    if not np.isfinite(f_val):
+        # 오차 분산이 0이면(모든 셀이 행+열 효과로 완전히 설명됨) F와 p를 정의할 수 없다
+        return {'status': 'Error: Zero Error Variance', 'n': n, 'k': k}
+    p_val = float(stats.f.sf(f_val, df_list, df_err))
 
     # Greenhouse-Geisser epsilon
     cov = np.cov(Y.T, ddof=1)
@@ -353,7 +362,7 @@ def repeated_measures_anova(matrix: pd.DataFrame) -> dict:
     denom = (k - 1) * (dev ** 2).sum()
     eps = float(np.trace(dev) ** 2 / denom) if denom > 0 else 1.0
     eps = min(max(eps, 1.0 / (k - 1)), 1.0)
-    p_gg = float(stats.f.sf(f_val, df_list * eps, df_err * eps)) if np.isfinite(f_val) else None
+    p_gg = float(stats.f.sf(f_val, df_list * eps, df_err * eps))
 
     # Fisher LSD (dB) 및 리스트 평균의 95% CI 반폭
     t_crit = float(stats.t.ppf(0.975, df_err))
@@ -375,7 +384,11 @@ def repeated_measures_anova(matrix: pd.DataFrame) -> dict:
 
 
 def posthoc_vs_grand(list_stats: pd.DataFrame, anova: dict) -> pd.DataFrame:
-    """각 리스트 평균이 전체 평균과 유의하게 다른지 LSD 기준으로 표시한다."""
+    """각 리스트 평균이 전체 평균과 유의하게 다른지 LSD 기준으로 표시한다.
+
+    Fisher LSD는 옴니버스 ANOVA가 유의할 때만 보호되고 k개 비교에 대한 다중비교 보정도
+    하지 않는다. 따라서 결과는 '보정 전' 탐색 지표로만 쓰고, 판정에는 쓰지 않는다.
+    """
     if list_stats.empty or anova.get('status') != 'Success':
         return list_stats
     out = list_stats.copy()
@@ -407,7 +420,7 @@ def order_effect(cells: pd.DataFrame) -> dict:
         return {'status': 'Error: No Order Variation'}
 
     r, p_pooled = stats.pearsonr(df['order_c'], df['snr50_c'])
-    slope = float(np.polyfit(df['order_c'], df['snr50_c'], 1)[0])
+    slope_pooled = float(np.polyfit(df['order_c'], df['snr50_c'], 1)[0])
 
     # 참가자별 기울기 → 1표본 t검정 (참가자를 분석 단위로)
     slopes = []
@@ -420,6 +433,8 @@ def order_effect(cells: pd.DataFrame) -> dict:
         t_stat, p_clustered = float(t_stat), float(p_clustered)
     else:
         t_stat, p_clustered = None, None
+    # 효과 크기는 검정 대상(참가자별 기울기)의 평균으로 보고해 p값과 같은 양을 가리키게 한다
+    slope = float(slopes.mean()) if len(slopes) else slope_pooled
 
     # 카운터밸런싱 균형: 리스트별 평균 제시 위치 (완전 균형이면 모두 (NUM_LISTS+1)/2)
     balance = (df.groupby('list_no')['presentation_order'].mean()
