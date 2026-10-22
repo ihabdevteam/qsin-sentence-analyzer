@@ -32,7 +32,10 @@ CRIT_ANOVA_P = 0.05         # 실험4: ANOVA List 주효과는 유의하지 않�
 # K-Quick-SIN 정상 규준 (analysis_utils와 동일 값)
 NORM_SNR50 = -4.16
 
-TARGET_PARTICIPANTS = 30    # 로드맵 실험3 목표 인원 (25~30명)
+# 목표 인원: Williams 18x18 설계는 18명 단위로만 제시 순서가 완전 균형이 되므로 18명(1주기).
+# 로드맵의 25~30명은 균형이 깨지므로 쓰지 않는다. 제외자가 생기면 같은 행에 교체자를 넣고
+# 번호는 '원래 번호 + 18'을 부여한다(앱이 (번호-1) mod 18로 같은 행을 배정).
+TARGET_PARTICIPANTS = 18
 
 # --- 본분석 제외 세션 ---
 # 2026-10-14~19에 구버전 앱(v1.0.0, quick-sin #22 수정 이전)으로 진행된 세션.
@@ -269,6 +272,8 @@ def evaluate_lists(matrix: pd.DataFrame,
         'snr50_mean': mean.values,
         'snr50_sd': sd.values,
         'snr50_sem': sem.values,
+        # 리스트별 n이 작으므로 정규 근사(1.96) 대신 t 임계값을 쓴다
+        'snr50_ci_half': (sem * stats.t.ppf(0.975, dfree)).values,
         'sd_ci_low': sd_lo.values,
         'sd_ci_high': sd_hi.values,
         'dev_from_grand': (mean - grand).values,

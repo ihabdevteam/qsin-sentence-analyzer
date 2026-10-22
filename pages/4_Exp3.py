@@ -88,7 +88,8 @@ cells_all = build_cell_table(df)
 n_part = int(df['participant_no'].nunique())
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("참가자", f"{n_part}명", help=f"로드맵 목표 {TARGET_PARTICIPANTS}명 (25~30명)")
+c1.metric("참가자", f"{n_part}명", help=(f"목표 {TARGET_PARTICIPANTS}명 = Williams 1주기. 제외자가 생기면 같은 행에 "
+                      "교체자를 넣고 번호는 '원래 번호 + 18'을 부여합니다."))
 c2.metric("목표 진행률", f"{n_part / TARGET_PARTICIPANTS * 100:.0f}%")
 c3.metric("리포트(셀)", f"{len(cells_all):,}건")
 c4.metric("문장 기록", f"{len(df):,}행")
@@ -281,7 +282,7 @@ if all_complete:
     ci = np.full(len(fp), anova['ci_half'])
     ci_note = "통합 오차항(MS_error) 기준"
 else:
-    ci = (fp['snr50_sem'] * 1.96).to_numpy()
+    ci = fp['snr50_ci_half'].to_numpy()
     ci_note = "리스트별 SEM 기준 (결측 셀이 있어 통합 오차항을 쓰지 않음)"
 
 fig = go.Figure()
