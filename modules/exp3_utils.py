@@ -34,6 +34,21 @@ NORM_SNR50 = -4.16
 
 TARGET_PARTICIPANTS = 30    # 로드맵 실험3 목표 인원 (25~30명)
 
+# --- 본분석 제외 세션 ---
+# 2026-10-14~19에 구버전 앱(v1.0.0, quick-sin #22 수정 이전)으로 진행된 세션.
+# 짝수 제시위치 리포트가 직전 리포트의 복제본으로 저장되어 실제로는 리스트 9개만 진행됐고,
+# participant_no도 저장되지 않았다. 원본은 보조분석(유효 9개 리스트, mv7pq4ne/mv7rvzd5는
+# 동일인 재검)을 위해 DB에 보존하고 여기서만 제외한다. 이 세션들에 participant_no를
+# 채워 넣으면 Williams 9~13행을 다시 채운 참가자와 셀이 겹치므로 채우지 말 것.
+EXCLUDED_SESSIONS = {
+    'mv7pq4ne': 'v1.0.0 리포트 복제 버그 (Williams 9행)',
+    'mv7rvzd5': 'v1.0.0 리포트 복제 버그 (Williams 9행, mv7pq4ne 동일인 재검)',
+    'mv7snr4m': 'v1.0.0 리포트 복제 버그 (Williams 10행)',
+    'mv92fkkh': 'v1.0.0 리포트 복제 버그 (Williams 11행)',
+    'mvag2l43': 'v1.0.0 리포트 복제 버그 (Williams 12행)',
+    'mveu0e60': 'v1.0.0 리포트 복제 버그 (Williams 13행)',
+}
+
 
 # ============================================================
 # 역치 환산
@@ -109,6 +124,9 @@ def get_exp3_data(_supabase_client, experiment: str = 'exp3'):
             })
 
         df = pd.DataFrame(records)
+        df = df[~df['session_id'].isin(EXCLUDED_SESSIONS.keys())]
+        if df.empty:
+            return pd.DataFrame()
         for col in ['participant_no', 'list_no', 'presentation_order', 'trial_index']:
             df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
         for col in ['snr_level', 'total_score']:

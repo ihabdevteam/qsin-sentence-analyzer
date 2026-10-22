@@ -10,6 +10,7 @@ from modules.exp3_utils import (
     CRIT_ANOVA_P,
     CRIT_MEAN_DEV,
     CRIT_SUBJECT_SD,
+    EXCLUDED_SESSIONS,
     LADDER,
     NORM_SNR50,
     NUM_LISTS,
@@ -94,6 +95,13 @@ c4.metric("문장 기록", f"{len(df):,}행")
 c5.metric("수집 기간", f"{str(df['test_datetime'].min())[:10]} ~ {str(df['test_datetime'].max())[:10]}")
 
 st.progress(min(n_part / TARGET_PARTICIPANTS, 1.0))
+
+if EXCLUDED_SESSIONS:
+    with st.expander(f"본분석 제외 세션 {len(EXCLUDED_SESSIONS)}개 (DB에는 보존)"):
+        st.dataframe(
+            pd.DataFrame(list(EXCLUDED_SESSIONS.items()), columns=['세션', '제외 사유']),
+            hide_index=True, width='stretch'
+        )
 
 # Williams 균형 안내 — 18의 배수에서만 제시 순서가 완전 균형이 된다
 if n_part % NUM_LISTS != 0:
