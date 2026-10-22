@@ -420,7 +420,6 @@ def order_effect(cells: pd.DataFrame) -> dict:
         return {'status': 'Error: No Order Variation'}
 
     r, p_pooled = stats.pearsonr(df['order_c'], df['snr50_c'])
-    slope_pooled = float(np.polyfit(df['order_c'], df['snr50_c'], 1)[0])
 
     # 참가자별 기울기 → 1표본 t검정 (참가자를 분석 단위로)
     slopes = []
@@ -428,13 +427,13 @@ def order_effect(cells: pd.DataFrame) -> dict:
         if g['presentation_order'].nunique() > 2:
             slopes.append(float(np.polyfit(g['presentation_order'].astype(float), g['snr50'], 1)[0]))
     slopes = np.asarray(slopes, dtype=float)
-    if len(slopes) >= 2:
-        t_stat, p_clustered = stats.ttest_1samp(slopes, 0.0)
-        t_stat, p_clustered = float(t_stat), float(p_clustered)
-    else:
-        t_stat, p_clustered = None, None
+    # 참가자 수준 검정이 불가능하면 셀 단위 기울기로 대체하지 않는다(다른 양을 같은 이름으로 보고하게 됨)
+    if len(slopes) < 2:
+        return {'status': 'Error: Not Enough Participant Slopes'}
+    t_stat, p_clustered = stats.ttest_1samp(slopes, 0.0)
+    t_stat, p_clustered = float(t_stat), float(p_clustered)
     # 효과 크기는 검정 대상(참가자별 기울기)의 평균으로 보고해 p값과 같은 양을 가리키게 한다
-    slope = float(slopes.mean()) if len(slopes) else slope_pooled
+    slope = float(slopes.mean())
 
     # 카운터밸런싱 균형: 리스트별 평균 제시 위치 (완전 균형이면 모두 (NUM_LISTS+1)/2)
     balance = (df.groupby('list_no')['presentation_order'].mean()

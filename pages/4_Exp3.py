@@ -73,6 +73,8 @@ with col_opt:
 if fetch:
     if fresh:
         get_exp3_data.clear()
+    # 조회 실패 시 이전 결과가 남아 다음 rerun에서 낡은 분석이 보이지 않도록 먼저 비운다
+    st.session_state.exp3_df = None
     with st.spinner("Supabase에서 실험 3 데이터를 조회 중입니다..."):
         try:
             st.session_state.exp3_df = get_exp3_data(supabase)
