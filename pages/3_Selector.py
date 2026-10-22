@@ -230,7 +230,7 @@ if raw_df is not None and not raw_df.empty:
                             "data_points": "데이터 수",
                             "sentences_tested": "테스트 문장 수",
                         },
-                        use_container_width=True
+                        width='stretch'
                     )
 
                     csv = subject_df.to_csv(index=False).encode('utf-8-sig')
@@ -278,7 +278,7 @@ if raw_df is not None and not raw_df.empty:
                             "data_points": "데이터 수",
                             "snr_levels": "SNR 레벨 수",
                         },
-                        use_container_width=True
+                        width='stretch'
                     )
 
                     csv_s = sentence_df.to_csv(index=False).encode('utf-8-sig')
