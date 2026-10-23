@@ -73,8 +73,14 @@ with col_opt:
 if fetch:
     if fresh:
         get_exp3_data.clear()
+    # 조회 실패 시 이전 결과가 남아 다음 rerun에서 낡은 분석이 보이지 않도록 먼저 비운다
+    st.session_state.exp3_df = None
     with st.spinner("Supabase에서 실험 3 데이터를 조회 중입니다..."):
-        st.session_state.exp3_df = get_exp3_data(supabase)
+        try:
+            st.session_state.exp3_df = get_exp3_data(supabase)
+        except Exception as e:
+            st.error(f"실험 3 데이터를 불러오는 중 오류가 발생했습니다: {e}")
+            st.stop()
 
 df = st.session_state.exp3_df
 if df is None:
@@ -142,12 +148,14 @@ matrix_full = cell_matrix(cells, 'snr50')
 incomplete = cells[~cells['is_complete']]
 if not incomplete.empty:
     st.error(
-        f"**불완전한 셀 {len(incomplete)}개** — 문장이 6개({len(LADDER)}단계) 미달인 셀은 "
-        "감산식이 성립하지 않아 SNR-50을 계산하지 않았습니다(빠진 문장을 오답으로 "
-        "취급하면 역치가 최대 7.8 dB까지 왜곡됩니다). 아래 분석에서 제외됩니다."
+        f"**불완전한 셀 {len(incomplete)}개** — 정확히 6문장·사다리 {len(LADDER)}단계 각 1개가 "
+        "아닌 셀(누락 또는 중복 저장)은 감산식이 성립하지 않아 SNR-50을 계산하지 않았습니다"
+        "(빠진 문장을 오답으로 취급하면 역치가 최대 7.8 dB까지 왜곡됩니다). SNR-50을 쓰는 "
+        "분석(§2 기준 판정·ANOVA, §3 시뮬레이터, §4 순서 효과, §5 신뢰도)에서 제외되며, "
+        "문장 단위 집계(§1 무결성 검증, §3 문장 점검, 심리측정 함수, 내보내기)에는 포함됩니다."
     )
     st.dataframe(
-        incomplete[['participant_no', 'list_no', 'sentences', 'snr_levels',
+        incomplete[['participant_no', 'list_no', 'rows', 'sentences', 'snr_levels',
                     'total_correct', 'presentation_order', 'session_id']],
         hide_index=True, width='stretch'
     )
@@ -250,13 +258,13 @@ view = list_stats.copy()
 view['판정'] = view['pass_all'].map(lambda v: "통과" if v else "미달")
 view['SD 95% CI'] = view.apply(lambda r: f"{r['sd_ci_low']:.2f} – {r['sd_ci_high']:.2f}", axis=1)
 if 'deviates' in view.columns:
-    view['평균과 유의차'] = view['deviates'].map(lambda v: "유의" if v else "-")
+    view['평균과 차이(LSD·보정 전)'] = view['deviates'].map(lambda v: "유의" if v else "-")
 else:
-    view['평균과 유의차'] = "-"
+    view['평균과 차이(LSD·보정 전)'] = "-"
 view = view[['list_no', 'n', 'mean_score', 'snr50_mean', 'dev_from_grand', 'snr50_sd',
-             'SD 95% CI', 'snr50_min', 'snr50_max', 'pass_sd', 'pass_dev', '평균과 유의차', '판정']]
+             'SD 95% CI', 'snr50_min', 'snr50_max', 'pass_sd', 'pass_dev', '평균과 차이(LSD·보정 전)', '판정']]
 view.columns = ['리스트', 'n', '평균 정답수', 'SNR-50(dB)', '전체평균 편차',
-                'SD(dB)', 'SD 95% CI', '최소', '최대', '기준A', '기준B', '평균과 유의차', '판정']
+                'SD(dB)', 'SD 95% CI', '최소', '최대', '기준A', '기준B', '평균과 차이(LSD·보정 전)', '판정']
 for c in ['평균 정답수', 'SNR-50(dB)', '전체평균 편차', 'SD(dB)', '최소', '최대']:
     view[c] = view[c].astype(float).round(2)
 view['기준A'] = view['기준A'].map(_pass_icon)
@@ -535,7 +543,8 @@ with st.expander("분석 요약 텍스트"):
         )
     if oe.get('status') == 'Success':
         lines.append(
-            f"순서 효과: r={oe['r']:+.3f} (p={oe['p']:.4f}), "
+            f"순서 효과: r={oe['r']:+.3f} "
+            f"(참가자 수준 p={'–' if oe['p'] is None else format(oe['p'], '.4f')}), "
             f"18리스트 누적 {oe['total_db_over_lists']:+.2f} dB"
         )
     st.code("\n".join(lines), language=None)
