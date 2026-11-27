@@ -123,7 +123,7 @@ if st.session_state.temp_download_data is not None:
     with col_target:
         target = st.number_input(
             "목표 SNR-50 (dB)", value=TARGET_SNR50, step=0.01, format="%.2f",
-            help="K-Quick-SIN 정상 규준값입니다."
+            help="실험 2-1-1 문장 평균 SNR-50(문장 선별 목표값)입니다. 정상 기준이 아닙니다."
         )
     with col_tol:
         tolerance = st.number_input(

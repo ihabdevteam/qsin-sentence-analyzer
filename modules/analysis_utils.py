@@ -7,7 +7,7 @@ from sklearn.linear_model import LogisticRegression
 # 테스트 사용자 ID
 TEMP_USER_ID = "61720be3-19c6-4383-8563-85a6f2d4e795"
 
-# K-Quick-SIN 정상 규준
+# 실험 2-1-1 문장 평균 SNR-50 (문장 선별 목표값). 정상 기준(SNR 손실 기준)이 아님 — 정상 기준은 exp4_utils.norm_value
 TARGET_SNR50 = -4.16  # dB
 ABSOLUTE_TOLERANCE = 2.0  # +-2.0 dB
 SLOPE_THRESHOLD = 3.0  # %/dB 미만 시 변별력 부족

@@ -29,7 +29,7 @@ CRIT_BETWEEN_LIST_SD = 1.0  # 실험4: 리스트 간 SNR-50 SD 상한 (dB)
 CRIT_SCORE_SD = 1.5         # 실험4: 리스트 간 점수 SD 상한 (점)
 CRIT_ANOVA_P = 0.05         # 실험4: ANOVA List 주효과는 유의하지 않아야 함
 
-# K-Quick-SIN 정상 규준 (analysis_utils와 동일 값)
+# 실험 2-1-1 문장 평균 SNR-50 (analysis_utils와 동일 값). 정상 기준이 아님 — 정상 기준은 exp4_utils.norm_value
 NORM_SNR50 = -4.16
 
 # 목표 인원: Williams 18x18 설계는 18명 단위로만 제시 순서가 완전 균형이 되므로 18명(1주기).
@@ -310,7 +310,7 @@ def summary_criteria(matrix: pd.DataFrame, anova: dict | None = None) -> pd.Data
     grand = float(np.nanmean(matrix.values))
 
     rows = [
-        ("전체 평균 SNR-50", f"{grand:+.2f} dB", f"규준 {NORM_SNR50:+.2f} dB", None),
+        ("전체 평균 SNR-50", f"{grand:+.2f} dB", f"실험2-1-1 문장 평균 {NORM_SNR50:+.2f} dB", None),
         ("리스트 간 SNR-50 SD", f"{between_sd:.2f} dB", f"< {CRIT_BETWEEN_LIST_SD:.1f} dB (실험4)",
          between_sd < CRIT_BETWEEN_LIST_SD),
         ("리스트 간 점수 SD", f"{score_sd:.2f} 점", f"< {CRIT_SCORE_SD:.1f} 점 (실험4)",
