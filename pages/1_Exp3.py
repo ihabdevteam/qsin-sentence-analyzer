@@ -14,11 +14,13 @@ import plotly.graph_objects as go
 import streamlit as st
 from scipy import stats
 
+from modules.auth import require_password
 from modules.db_utils import init_supabase_client
 from modules.exp3_utils import get_exp3_data
 from modules import exp3_selection as S
 
 st.set_page_config(page_title="실험 3 최종 리스트", layout="wide")
+require_password()
 
 # 색: 사용 = 파랑, 제외 = 주황 (색맹 검증 통과). 색만으로 구분하지 않도록 모양(●/✕)도 다르게 쓴다.
 C_KEEP = "#1a73c8"

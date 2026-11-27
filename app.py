@@ -1,10 +1,14 @@
 import streamlit as st
 
+from modules.auth import require_password
+
 st.set_page_config(
     page_title="Quick-SIN 분석",
     page_icon="🎧",
     layout="wide"
 )
+
+require_password()
 
 st.title("Quick-SIN 한국어판 분석 페이지")
 

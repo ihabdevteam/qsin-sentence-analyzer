@@ -14,9 +14,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from modules import exp4_utils as U
+from modules.auth import require_password
 from modules.db_utils import init_supabase_client
 
 st.set_page_config(page_title="실험 4 최종 검증", layout="wide")
+require_password()
 
 C_R1 = "#1a73c8"     # 1차 / 기본
 C_R2 = "#c0502a"     # 2차 / 강조(색맹 검증 통과 조합)

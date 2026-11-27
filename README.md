@@ -42,7 +42,8 @@ streamlit run app.py
 ```
 
 `.streamlit/secrets.toml`에 `SUPABASE_URL`, `SUPABASE_KEY`가 필요합니다(저장소에 올리지 않음).
-배포(Streamlit Community Cloud)에서는 앱 설정의 Secrets에 같은 값을 넣습니다. `packages.txt`의 `fonts-nanum`은
+배포(Streamlit Community Cloud)에서는 앱 설정의 Secrets에 같은 값을 넣습니다. Secrets에 `APP_PASSWORD = "..."`를 추가하면 모든 페이지가
+비밀번호를 묻습니다(없으면 공개, `modules/auth.py`). `packages.txt`의 `fonts-nanum`은
 보고서 그래프의 한글 글꼴용입니다.
 
 ## 작업 흐름
