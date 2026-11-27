@@ -3,3 +3,5 @@
 __pycache__/
 modules/__pycache__/
 test/
+# 로컬 분석 스크립트·데이터 (git 제외)
+analysis/
