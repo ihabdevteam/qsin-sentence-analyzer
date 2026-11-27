@@ -25,7 +25,7 @@ KST = ZoneInfo("Asia/Seoul")
 LISTS = [3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 18]
 PRACTICE_LISTS = [8, 9]
 N_POS = len(LISTS)
-TARGET_PARTICIPANTS = 30        # Williams 26행 + 예비 4명
+TARGET_PARTICIPANTS = 26        # Williams 26행 1주기 (2026-11-27 결정: 예비 27~30번 모집 안 함, 2차도 26명)
 WILLIAMS_ROWS = 26
 RETEST_MAX_DAYS = 14            # 2차는 1차 후 14일 이내
 RETEST_SOON_DAYS = 3            # 기한 임박 표시
@@ -184,7 +184,7 @@ def collection_status(cells: pd.DataFrame, today: date | None = None) -> pd.Data
 
 
 def stage(status: pd.DataFrame) -> dict:
-    """잠정/최종 판정. 1차 26명 이상 + 모든 1차 완료자가 2차 완료 또는 기한 초과 → 최종."""
+    """잠정/최종 판정. 1차 26명 + 그 26명 모두 2차 완료 또는 기한 초과 → 최종."""
     r1 = status[status["1차 리스트"] >= N_POS]
     done = int((r1["상태"] == "2차 완료").sum())
     dropped = int((r1["상태"] == "기한 초과(탈락)").sum())
@@ -220,14 +220,9 @@ def data_checks(cells: pd.DataFrame, status: pd.DataFrame) -> list[dict]:
     add("리스트마다 6문장이 한 번씩 저장됐는가", bad, "이상 없음", "{n}개 리스트 불완전",
         "문장이 빠졌거나 같은 리스트가 두 번 저장된 경우입니다. 해당 리스트는 분석에서 빠집니다.")
 
-    # 3. 연습 리스트 30/30
-    pr = cells[cells["is_practice"]]
-    full = pr.groupby(["participant_no", "test_round"])["total_correct"].apply(lambda s: (s >= 30).all() and len(s) == 2)
-    bad = [f"{p}번({r}차)" for (p, r), v in full.items() if v]
-    add("연습 리스트를 채점했는가", bad, "모두 채점됨", "{n}건 연습 2개 모두 30/30",
-        "연습 리스트 2개가 모두 만점이면 채점 없이 넘겼을 가능성이 있습니다. 분석에는 영향 없습니다(연습은 분석 제외).")
+    # (연습 리스트 8·9는 분석에 쓰지 않으므로 점검하지 않는다 — 2026-11-27 결정)
 
-    # 4. 2차 순서 = 1차 순서
+    # 3. 2차 순서 = 1차 순서
     bad = []
     for p, g in main.groupby("participant_no"):
         o1 = g[g.test_round == 1].sort_values("presentation_order")["list_no"].tolist()
@@ -236,12 +231,12 @@ def data_checks(cells: pd.DataFrame, status: pd.DataFrame) -> list[dict]:
             bad.append(f"{p}번")
     add("2차 순서가 1차와 같은가", bad, "모두 같음(또는 2차 없음)", "{n}명 다름")
 
-    # 5. 간격
+    # 4. 간격
     s = status.dropna(subset=["간격(일)"])
     bad = [f"{r['참가자']}번({int(r['간격(일)'])}일)" for _, r in s.iterrows() if r["간격(일)"] > RETEST_MAX_DAYS]
     add("2차가 1차 후 14일 이내인가", bad, "모두 14일 이내(또는 2차 없음)", "{n}명 14일 초과")
 
-    # 6. 참가자 이상치 (1차 13리스트 평균)
+    # 5. 참가자 이상치 (1차 13리스트 평균)
     m = matrix(cells, 1)
     bad = []
     if len(m) >= 5:

@@ -63,9 +63,9 @@ if stg["final"]:
     st.success(f"✅ **최종 결과** — 수집이 끝났습니다. 1차 {stg['n_r1']}명, 2차 {stg['n_r2']}명{drop_msg}.")
 else:
     st.warning(
-        f"⏳ **잠정 결과** — 아직 수집 중입니다. 1차 {stg['n_r1']}명 완료(목표 {U.TARGET_PARTICIPANTS}명), "
-        f"2차 {stg['n_r2']}명 완료 · {stg['n_wait']}명 대기. "
-        f"1차 {U.WILLIAMS_ROWS}명 이상이 모두 2차를 마치거나 2차 기한이 지나면 자동으로 '최종'으로 바뀝니다."
+        f"⏳ **잠정 결과** — 2차(재검사) 진행 중입니다. 1차 {stg['n_r1']}명 완료, "
+        f"2차 {stg['n_r2']} / {stg['n_r1']}명 완료 · {stg['n_wait']}명 대기. "
+        "모든 참가자가 2차를 마치거나 2차 기한이 지나면 자동으로 '최종'으로 바뀝니다."
     )
 
 tabs = st.tabs(["① 수집 현황", "② 데이터 점검", "③ 리스트 동등성", "④ 순서 효과", "⑤ 정상 기준", "📦 다운로드"])
@@ -96,7 +96,7 @@ with tabs[0]:
     )
     st.caption(
         "· 청력 기준(양쪽 250~8000 Hz 모두 20 dB HL 이하) 미달자는 DB에서 'exp4_excluded'로 옮겨 이 표에 나오지 않습니다.  \n"
-        "· 27~30번은 순서표 1~4행을 다시 씁니다(예비 4명).  \n"
+        f"· 참가자는 {U.TARGET_PARTICIPANTS}명(Williams 순서표 26행 1주기)입니다.  \n"
         "· 2차는 1차와 같은 참가자 번호·같은 순서로 진행합니다."
     )
 
@@ -253,7 +253,7 @@ with tabs[4]:
 CODEBOOK = pd.DataFrame([
     ("exp4_cells.csv", "participant_no", "참가자 번호"),
     ("exp4_cells.csv", "test_round", "1 = 1차, 2 = 2차(재검사)"),
-    ("exp4_cells.csv", "is_practice", "연습 리스트(8, 9) 여부. 분석에는 쓰지 않음"),
+    ("exp4_cells.csv", "is_practice", "연습 리스트(8, 9) 여부. 분석에는 쓰지 않음(채점하지 않은 경우도 있음)"),
     ("exp4_cells.csv", "list_no", "리스트 번호"),
     ("exp4_cells.csv", "presentation_order", "제시 순서(본 리스트 1~13번째, 연습은 빈칸)"),
     ("exp4_cells.csv", "total_correct", "리스트 정답 키워드 수 (0~30)"),
