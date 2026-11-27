@@ -448,6 +448,22 @@ with tabs[7]:
         "검사 문장 원문은 검사 자료 보호를 위해 빼고 문장 번호만 넣었습니다. "
         + ("" if stg["final"] else "**아직 수집 중이라 잠정 데이터입니다.**")
     )
+    st.subheader("📄 Word 보고서")
+    st.markdown(
+        "지금 데이터로 실험 4 결과 보고서(.docx)를 만듭니다. 요약·결정 요청 사항, 연구 흐름, 방법, 결과(동등성·순서 효과·"
+        "정상 기준·검사-재검사), 계획 대비 변경과 민감도 분석, 제한점, 부록이 들어갑니다. "
+        + ("" if stg["final"] else "**2차가 진행 중이라 '잠정' 보고서입니다. 2차가 모두 끝난 뒤 다시 내려받으면 최종 보고서가 됩니다.**")
+    )
+    if st.button("보고서 만들기", type="primary"):
+        from modules.exp4_report import build_report
+        with st.spinner("보고서를 만드는 중입니다..."):
+            st.session_state.exp4_docx = build_report(df, U.count_excluded(supabase))
+    if st.session_state.get("exp4_docx"):
+        st.download_button("📄 보고서 내려받기 (.docx)", data=st.session_state.exp4_docx,
+                           file_name=f"QuickSIN_실험4_보고서_{'최종' if stg['final'] else '잠정'}_{datetime.now(U.KST):%Y%m%d}.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    st.subheader("📦 데이터")
     st.download_button("📦 실험 4 데이터 내려받기 (ZIP)", data=build_zip(),
                        file_name=f"qsin_exp4_data_{datetime.now(U.KST):%Y%m%d}.zip", mime="application/zip", type="primary")
     with st.expander("ZIP 안에 들어 있는 파일과 열 설명"):

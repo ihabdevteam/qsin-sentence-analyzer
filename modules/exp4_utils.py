@@ -451,3 +451,14 @@ def final_decision(cells: pd.DataFrame) -> dict:
     return dict(steps1=steps1, dropped=dropped, computed=computed, matches=computed == FINAL_LISTS,
                 final_lists=FINAL_LISTS, unstable=unstable, sensitivity=pd.DataFrame(sens),
                 eq1=equivalence(m_1[FINAL_LISTS]) if len(m_1) >= 3 else None)
+
+
+@st.cache_data(ttl=600)
+def count_excluded(_supabase_client) -> int | None:
+    """청력 기준 미달로 'exp4_excluded'로 옮긴 세션(사람) 수. 실패하면 None."""
+    try:
+        resp = (_supabase_client.table("test_reports_qsin").select("session_id")
+                .eq("experiment", "exp4_excluded").execute())
+        return len({r["session_id"] for r in (resp.data or [])})
+    except Exception:
+        return None

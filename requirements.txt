@@ -6,3 +6,5 @@ scipy
 scikit-learn
 plotly
 streamlit-option-menu
+python-docx
+matplotlib
