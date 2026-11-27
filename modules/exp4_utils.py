@@ -30,11 +30,17 @@ WILLIAMS_ROWS = 26
 RETEST_MAX_DAYS = 14            # 2차는 1차 후 14일 이내
 RETEST_SOON_DAYS = 3            # 기한 임박 표시
 
-# 리스트 세트 (민감도 분석용)
+# 최종 리스트 (2026-11-27 확정): 1차 26명 완료 후 사전 계획대로 1차 데이터로 판정.
+# 13개는 리스트 효과 p = .032로 미달 → 평균에서 가장 먼 리스트 4 제외 → 12개에서 세 기준 모두 통과.
+# 2차(재검사) 데이터는 같은 문장을 다시 듣는 검사라 리스트 구성에는 쓰지 않고 신뢰도 계산에만 쓴다.
+FINAL_LISTS = [3, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 18]
+DROPPED_LISTS = [4]
+
+# 리스트 세트 (첫 번째 = 최종, 나머지는 민감도 분석)
 LIST_SETS = {
-    "13개 전체 (계획)": LISTS,
-    "12개 (리스트 4 제외)": [l for l in LISTS if l != 4],
-    "11개 (리스트 4·11 제외)": [l for l in LISTS if l not in (4, 11)],
+    "12개 (최종, 리스트 4 제외)": FINAL_LISTS,
+    "13개 (계획 원안)": LISTS,
+    "11개 (리스트 4·11 제외, 민감도)": [l for l in LISTS if l not in (4, 11)],
 }
 
 # 판정 기준 (분석 계획)
@@ -316,11 +322,17 @@ def position_effect(cells: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
-def norm_value(cells: pd.DataFrame) -> dict | None:
-    """정상 기준 평균(분석 계획). 1차만, 13개 리스트를 모두 마친 참가자."""
+def norm_value(cells: pd.DataFrame, lists=None) -> dict | None:
+    """정상 기준 평균(분석 계획). 1차만, 리스트를 모두 마친 참가자.
+
+    최종 리스트(12개)로 계산한다: A = 제시 순서 1~2번째 중 최종 리스트인 것의 평균(1~2번째에 리스트 4가
+    있었던 참가자는 나머지 1개), B = 최종 12개 평균. 계획서의 '13리스트'를 최종 세트로 바꾼 것이며
+    13개로 계산해도 A 채택·값(−3.3 dB)은 같다.
+    """
+    lists = FINAL_LISTS if lists is None else lists
     c = main_cells(cells, 1)
     full = c.groupby("participant_no")["list_no"].nunique()
-    c = c[c["participant_no"].isin(full[full == N_POS].index)]
+    c = c[c["participant_no"].isin(full[full == N_POS].index) & c["list_no"].isin(lists)]
     if c.empty:
         return None
     A_p = c[c["presentation_order"] <= 2].groupby("participant_no")["snr50"].mean()
@@ -380,12 +392,13 @@ def _agreement(x: pd.Series, y: pd.Series) -> dict:
                 **icc_a1(np.column_stack([x.to_numpy(float), y.to_numpy(float)])))
 
 
-def retest(cells: pd.DataFrame, lists=LISTS) -> dict | None:
+def retest(cells: pd.DataFrame, lists=None) -> dict | None:
     """1차·2차 모두 해당 리스트를 마친 참가자로 신뢰도를 계산한다.
 
     - 13리스트 평균 수준: 참가자별 1차 평균 vs 2차 평균
     - 리스트 1개 수준: 같은 리스트의 1차 vs 2차. 리스트별로 계산한 뒤 요약(ICC 평균·범위, SEM은 분산 평균)
     """
+    lists = FINAL_LISTS if lists is None else lists
     a, b = matrix(cells, 1, lists), matrix(cells, 2, lists)
     ids = a.index.intersection(b.index)
     if len(ids) < MIN_N_RETEST:
@@ -407,36 +420,34 @@ def retest(cells: pd.DataFrame, lists=LISTS) -> dict | None:
 
 
 # ------------------------------------------------------------
-# 최종 리스트 판정 (2차 판정 규칙, 2026-11-27)
+# 최종 리스트 판정 (사전 분석 계획, 2026-11-27 확정)
 # ------------------------------------------------------------
 FINAL_RULE = [
-    "① 1차 데이터로 동등성 기준을 확인하고, 통과하지 못하면 평균에서 가장 먼 리스트를 하나씩 빼며 다시 확인해 '제외 후보'를 정한다.",
-    "② 2차 데이터에 같은 절차를 적용했을 때도 그 리스트가 제외 후보로 나와야 최종 제외한다.",
-    "③ 1차와 2차 점수 차이가 유난히 들쭉날쭉한 리스트(회차 차이 SD > 리스트 중앙값 × 1.5)는 제외하지 않고 표시만 한다.",
-    f"④ 어떤 경우에도 최종 리스트는 {MIN_LISTS}개 이상 남긴다.",
+    "리스트 동등성은 **1차 데이터**로 판정한다(처음 듣는 조건, 제시 순서 균형).",
+    "세 기준(리스트 간 SD < 1.0 dB, 점수 SD < 1.5점, 리스트 효과 p ≥ .05)에 미달하면 평균에서 가장 먼 리스트를 하나씩 빼며 다시 확인한다. 통과하면 멈춘다.",
+    f"최종 리스트는 {MIN_LISTS}개 이상 남긴다.",
+    "2차(재검사)는 같은 문장을 다시 듣는 검사라 리스트 구성에 쓰지 않고, 최종 리스트의 신뢰도 계산에만 쓴다. "
+    "회차 차이가 유난히 들쭉날쭉한 리스트(차이 SD > 중앙값 × 1.5)는 표시만 한다.",
 ]
-
-
-def _dropped(steps: list[dict]) -> list[int]:
-    return [s["drop"] for s in steps if "drop" in s]
 
 
 def final_decision(cells: pd.DataFrame) -> dict:
     m_1 = matrix(cells, 1)
-    steps1 = stepwise_candidates(m_1)
-    cand = _dropped(steps1)
-    m_2 = matrix(cells, 2)
-    ready2 = len(m_2) >= MIN_N_RETEST
-    steps2 = stepwise_candidates(m_2) if ready2 else []
-    cand2 = _dropped(steps2)
-    confirmed = [l for l in cand if l in cand2] if ready2 else []
-    final_lists = [l for l in LISTS if l not in confirmed]
-    if len(final_lists) < MIN_LISTS:      # ④ (단계 계산에서 이미 지켜지지만 한 번 더 보장)
-        final_lists = LISTS[:]
-        confirmed = []
+    steps1 = stepwise_candidates(m_1) if len(m_1) >= 3 else []
+    dropped = [s["drop"] for s in steps1 if "drop" in s]
+    computed = [l for l in LISTS if l not in dropped]
     rt = retest(cells)
-    unstable = rt["per_list"].loc[rt["per_list"]["unstable"], "list_no"].tolist() if rt and rt.get("ready") else []
-    eq_final = equivalence(m_1[final_lists]) if len(m_1) >= 3 else None
-    eq2_final = equivalence(m_2[final_lists]) if ready2 else None
-    return dict(steps1=steps1, cand=cand, ready2=ready2, n2=len(m_2), steps2=steps2, cand2=cand2,
-                confirmed=confirmed, final_lists=final_lists, unstable=unstable, eq1=eq_final, eq2=eq2_final)
+    unstable = rt["per_list"].loc[rt["per_list"]["unstable"], "list_no"].tolist() if rt.get("ready") else []
+    sens = []
+    for name, ls in LIST_SETS.items():
+        if len(m_1) >= 3:
+            e = equivalence(matrix(cells, 1, ls))
+            nv = norm_value(cells, ls)
+            sens.append({"리스트 세트": name, "리스트 수": len(ls), "리스트 간 SD (dB)": round(e["between_sd"], 2),
+                         "점수 SD (점)": round(e["between_sd"] / 0.6, 2), "리스트 효과 p": e["anova"]["p_gg"],
+                         "세 기준": "✅ 모두 통과" if e["passed"] else "❌ 미달",
+                         "가장 쉬운~어려운 차이 (dB)": round(e["lists"]["mean"].max() - e["lists"]["mean"].min(), 2),
+                         "정상 기준 (dB)": round(nv["value"], 2) if nv else None})
+    return dict(steps1=steps1, dropped=dropped, computed=computed, matches=computed == FINAL_LISTS,
+                final_lists=FINAL_LISTS, unstable=unstable, sensitivity=pd.DataFrame(sens),
+                eq1=equivalence(m_1[FINAL_LISTS]) if len(m_1) >= 3 else None)
