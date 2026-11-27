@@ -336,3 +336,107 @@ def norm_value(cells: pd.DataFrame) -> dict | None:
                 use="A" if use_A else "B", value=val, value_rounded=round(val, 1), sd=sd,
                 ci=(val - t * sd / np.sqrt(n), val + t * sd / np.sqrt(n)),
                 upper=val + NORM_UPPER_Z * sd, A_p=A_p, B_p=B_p)
+
+
+# ------------------------------------------------------------
+# 검사-재검사 신뢰도 (1차 vs 2차)
+# ------------------------------------------------------------
+MIN_N_RETEST = 5                # 이 인원 미만이면 신뢰도를 계산하지 않음
+STABILITY_FACTOR = 1.5          # 규칙 ③: 리스트별 회차 차이 SD > 중앙값 × 1.5 → 표시
+
+
+def icc_a1(Y: np.ndarray) -> dict:
+    """ICC(2,1) 이원 무선, 절대 일치, 단일 측정 (Shrout & Fleiss / McGraw & Wong ICC(A,1)) + 95% CI."""
+    n, k = Y.shape
+    gm = Y.mean()
+    msr = k * ((Y.mean(1) - gm) ** 2).sum() / (n - 1)
+    msc = n * ((Y.mean(0) - gm) ** 2).sum() / (k - 1)
+    sse = ((Y - Y.mean(1, keepdims=True) - Y.mean(0, keepdims=True) + gm) ** 2).sum()
+    mse = sse / ((n - 1) * (k - 1))
+    icc = (msr - mse) / (msr + (k - 1) * mse + k * (msc - mse) / n)
+    a = k * icc / (n * (1 - icc))
+    b = 1 + k * icc * (n - 1) / (n * (1 - icc))
+    v = (a * msc + b * mse) ** 2 / ((a * msc) ** 2 / (k - 1) + (b * mse) ** 2 / ((n - 1) * (k - 1)))
+    fl, fu = stats.f.ppf(.975, n - 1, v), stats.f.ppf(.975, v, n - 1)
+    lo = n * (msr - fl * mse) / (fl * (k * msc + (k * n - k - n) * mse) + n * msr)
+    hi = n * (fu * msr - mse) / (k * msc + (k * n - k - n) * mse + n * fu * msr)
+    return dict(icc=float(icc), lo=float(lo), hi=float(hi))
+
+
+def icc_label(v: float) -> str:
+    """Koo & Li (2016) 해석."""
+    return "매우 좋음" if v >= .9 else "좋음" if v >= .75 else "보통" if v >= .5 else "낮음"
+
+
+def _agreement(x: pd.Series, y: pd.Series) -> dict:
+    d = y - x
+    n = len(d)
+    sd_d = float(d.std(ddof=1))
+    sem = sd_d / np.sqrt(2)
+    t = stats.ttest_rel(y, x)
+    return dict(n=n, r1_mean=float(x.mean()), r2_mean=float(y.mean()), diff_mean=float(d.mean()), diff_sd=sd_d,
+                t=float(t.statistic), p=float(t.pvalue), sem=sem, cd95=1.96 * np.sqrt(2) * sem,
+                loa=(float(d.mean() - 1.96 * sd_d), float(d.mean() + 1.96 * sd_d)),
+                **icc_a1(np.column_stack([x.to_numpy(float), y.to_numpy(float)])))
+
+
+def retest(cells: pd.DataFrame, lists=LISTS) -> dict | None:
+    """1차·2차 모두 해당 리스트를 마친 참가자로 신뢰도를 계산한다.
+
+    - 13리스트 평균 수준: 참가자별 1차 평균 vs 2차 평균
+    - 리스트 1개 수준: 같은 리스트의 1차 vs 2차. 리스트별로 계산한 뒤 요약(ICC 평균·범위, SEM은 분산 평균)
+    """
+    a, b = matrix(cells, 1, lists), matrix(cells, 2, lists)
+    ids = a.index.intersection(b.index)
+    if len(ids) < MIN_N_RETEST:
+        return dict(n=len(ids), ready=False)
+    a, b = a.loc[ids], b.loc[ids]
+    mean_level = _agreement(a.mean(1), b.mean(1))
+    per = []
+    for l in lists:
+        r = _agreement(a[l], b[l])
+        per.append(dict(list_no=l, **{k: r[k] for k in ("r1_mean", "r2_mean", "diff_mean", "diff_sd", "sem", "icc", "lo", "hi")}))
+    per = pd.DataFrame(per)
+    med = float(per["diff_sd"].median())
+    per["unstable"] = per["diff_sd"] > STABILITY_FACTOR * med
+    sem1 = float(np.sqrt((per["sem"] ** 2).mean()))
+    single = dict(icc_mean=float(per["icc"].mean()), icc_min=float(per["icc"].min()), icc_max=float(per["icc"].max()),
+                  sem=sem1, cd95=1.96 * np.sqrt(2) * sem1, diff_mean=float((b - a).values.mean()))
+    return dict(n=len(ids), ready=True, mean_level=mean_level, single=single, per_list=per, stability_median=med,
+                pairs=pd.DataFrame({"participant_no": ids, "r1": a.mean(1).values, "r2": b.mean(1).values}))
+
+
+# ------------------------------------------------------------
+# 최종 리스트 판정 (2차 판정 규칙, 2026-11-27)
+# ------------------------------------------------------------
+FINAL_RULE = [
+    "① 1차 데이터로 동등성 기준을 확인하고, 통과하지 못하면 평균에서 가장 먼 리스트를 하나씩 빼며 다시 확인해 '제외 후보'를 정한다.",
+    "② 2차 데이터에 같은 절차를 적용했을 때도 그 리스트가 제외 후보로 나와야 최종 제외한다.",
+    "③ 1차와 2차 점수 차이가 유난히 들쭉날쭉한 리스트(회차 차이 SD > 리스트 중앙값 × 1.5)는 제외하지 않고 표시만 한다.",
+    f"④ 어떤 경우에도 최종 리스트는 {MIN_LISTS}개 이상 남긴다.",
+]
+
+
+def _dropped(steps: list[dict]) -> list[int]:
+    return [s["drop"] for s in steps if "drop" in s]
+
+
+def final_decision(cells: pd.DataFrame) -> dict:
+    m_1 = matrix(cells, 1)
+    steps1 = stepwise_candidates(m_1)
+    cand = _dropped(steps1)
+    m_2 = matrix(cells, 2)
+    ready2 = len(m_2) >= MIN_N_RETEST
+    steps2 = stepwise_candidates(m_2) if ready2 else []
+    cand2 = _dropped(steps2)
+    confirmed = [l for l in cand if l in cand2] if ready2 else []
+    final_lists = [l for l in LISTS if l not in confirmed]
+    if len(final_lists) < MIN_LISTS:      # ④ (단계 계산에서 이미 지켜지지만 한 번 더 보장)
+        final_lists = LISTS[:]
+        confirmed = []
+    rt = retest(cells)
+    unstable = rt["per_list"].loc[rt["per_list"]["unstable"], "list_no"].tolist() if rt and rt.get("ready") else []
+    eq_final = equivalence(m_1[final_lists]) if len(m_1) >= 3 else None
+    eq2_final = equivalence(m_2[final_lists]) if ready2 else None
+    return dict(steps1=steps1, cand=cand, ready2=ready2, n2=len(m_2), steps2=steps2, cand2=cand2,
+                confirmed=confirmed, final_lists=final_lists, unstable=unstable, eq1=eq_final, eq2=eq2_final)

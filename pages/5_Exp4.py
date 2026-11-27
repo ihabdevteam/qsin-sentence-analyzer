@@ -68,7 +68,8 @@ else:
         "모든 참가자가 2차를 마치거나 2차 기한이 지나면 자동으로 '최종'으로 바뀝니다."
     )
 
-tabs = st.tabs(["① 수집 현황", "② 데이터 점검", "③ 리스트 동등성", "④ 순서 효과", "⑤ 정상 기준", "📦 다운로드"])
+tabs = st.tabs(["① 수집 현황", "② 데이터 점검", "③ 리스트 동등성", "④ 순서 효과", "⑤ 정상 기준",
+                "⑥ 검사-재검사", "⑦ 최종 리스트", "📦 다운로드"])
 
 # ============================================================
 # ① 수집 현황
@@ -248,6 +249,126 @@ with tabs[4]:
         st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
+# ⑥ 검사-재검사
+# ============================================================
+rt = U.retest(cells)
+with tabs[5]:
+    st.markdown(
+        "같은 사람이 1~2주 뒤 **같은 순서로 다시 검사했을 때 결과가 얼마나 같은지** 봅니다. "
+        "두 가지 수준으로 계산합니다.  \n"
+        "· **13개 리스트 평균**: 13개를 모두 했을 때의 안정성  \n"
+        "· **리스트 1개**: 같은 리스트의 1차 vs 2차. 임상에서는 리스트를 1~2개만 하므로 실제 검사 한 번의 안정성에 가깝습니다."
+    )
+    if not rt["ready"]:
+        st.info(f"현재 1차·2차를 모두 마친 참가자는 **{rt['n']}명**입니다. "
+                f"{U.MIN_N_RETEST}명 이상이 되면 자동으로 계산됩니다.")
+    else:
+        ml, sg = rt["mean_level"], rt["single"]
+        if not stg["final"]:
+            st.caption(f"⏳ 잠정 — 현재 {rt['n']}명 기준입니다. 2차가 끝나면 값이 바뀔 수 있습니다.")
+        st.subheader(f"요약 ({rt['n']}명)")
+        st.dataframe(pd.DataFrame([
+            ("ICC(2,1) [95% CI]", f"{ml['icc']:.2f} [{ml['lo']:.2f}, {ml['hi']:.2f}] · {U.icc_label(ml['icc'])}",
+             f"평균 {sg['icc_mean']:.2f} (범위 {sg['icc_min']:.2f}~{sg['icc_max']:.2f}) · {U.icc_label(sg['icc_mean'])}",
+             "1에 가까울수록 1차와 2차가 일치. .5/.75/.9 = 보통/좋음/매우 좋음 (Koo & Li)"),
+            ("SEM (측정의 표준오차)", f"{ml['sem']:.2f} dB", f"{sg['sem']:.2f} dB", "검사할 때마다 생기는 흔들림의 크기"),
+            ("CD95 (의미 있는 변화)", f"{ml['cd95']:.2f} dB", f"{sg['cd95']:.2f} dB",
+             "다시 검사했을 때 이보다 크게 달라져야 실제 변화로 봄 (= 1.96 × √2 × SEM)"),
+            ("2차 − 1차 평균 차이", f"{ml['diff_mean']:+.2f} dB (p = {p_fmt(ml['p'])})", f"{sg['diff_mean']:+.2f} dB",
+             "음수 = 2차가 더 좋아짐(학습 효과). p는 대응표본 t검정"),
+        ], columns=["지표", "13개 리스트 평균", "리스트 1개", "의미"]), hide_index=True, width="stretch")
+
+        pr = rt["pairs"]
+        c1, c2 = st.columns(2)
+        with c1:
+            lo_, hi_ = float(min(pr.r1.min(), pr.r2.min())) - 0.5, float(max(pr.r1.max(), pr.r2.max())) + 0.5
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=[lo_, hi_], y=[lo_, hi_], mode="lines", line=dict(color="gray", dash="dot", width=1),
+                                     hoverinfo="skip", name="1차 = 2차"))
+            fig.add_trace(go.Scatter(x=pr.r1, y=pr.r2, mode="markers", marker=dict(color=C_R1, size=10), name="참가자",
+                                     customdata=pr.participant_no,
+                                     hovertemplate="%{customdata}번<br>1차 %{x:.2f} dB<br>2차 %{y:.2f} dB<extra></extra>"))
+            fig.update_layout(title="참가자별 13개 평균: 1차 vs 2차", height=400, showlegend=False,
+                              xaxis=dict(title="1차 SNR-50 (dB)", range=[lo_, hi_], gridcolor=C_GRID),
+                              yaxis=dict(title="2차 SNR-50 (dB)", range=[lo_, hi_], gridcolor=C_GRID, scaleanchor="x"),
+                              margin=dict(l=10, r=10, t=60, b=40))
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("점선 위에 있으면 1차와 2차가 같습니다. 점선 아래 = 2차가 더 좋아짐.")
+        with c2:
+            avg, dif = (pr.r1 + pr.r2) / 2, pr.r2 - pr.r1
+            fig = go.Figure(go.Scatter(x=avg, y=dif, mode="markers", marker=dict(color=C_R1, size=10),
+                                       customdata=pr.participant_no,
+                                       hovertemplate="%{customdata}번<br>평균 %{x:.2f} dB<br>차이 %{y:+.2f} dB<extra></extra>"))
+            fig.add_hline(y=ml["diff_mean"], line=dict(color="gray", width=1.5),
+                          annotation_text=f"평균 차이 {ml['diff_mean']:+.2f}", annotation_position="top left")
+            for v_ in ml["loa"]:
+                fig.add_hline(y=v_, line=dict(color=C_R2, dash="dash", width=1.2),
+                              annotation_text=f"{v_:+.2f}", annotation_position="top right")
+            fig.update_layout(title="Bland-Altman (1차·2차 일치 범위)", height=400, showlegend=False,
+                              xaxis=dict(title="1차·2차 평균 (dB)", gridcolor=C_GRID),
+                              yaxis=dict(title="2차 − 1차 (dB)", gridcolor=C_GRID, zeroline=True, zerolinecolor="gray"),
+                              margin=dict(l=10, r=10, t=60, b=40))
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("주황 점선 = 95% 일치 한계(평균 차이 ± 1.96 SD). 참가자 대부분이 이 안에 있어야 합니다.")
+
+        st.subheader("리스트별 결과 (리스트 1개 수준)")
+        pl = rt["per_list"].copy()
+        pl["ICC [95% CI]"] = pl.apply(lambda r: f"{r.icc:.2f} [{r.lo:.2f}, {r.hi:.2f}]", axis=1)
+        pl["안정성"] = np.where(pl["unstable"], "⚠️ 들쭉날쭉", "—")
+        pl = pl.rename(columns={"list_no": "리스트", "r1_mean": "1차 평균", "r2_mean": "2차 평균",
+                                "diff_mean": "평균 차이", "diff_sd": "차이 SD", "sem": "SEM"})
+        st.dataframe(pl[["리스트", "1차 평균", "2차 평균", "평균 차이", "차이 SD", "SEM", "ICC [95% CI]", "안정성"]],
+                     hide_index=True, width="stretch",
+                     column_config={c: st.column_config.NumberColumn(format="%.2f")
+                                    for c in ["1차 평균", "2차 평균", "평균 차이", "차이 SD", "SEM"]})
+        st.caption(f"'들쭉날쭉' = 차이 SD가 리스트 중앙값({rt['stability_median']:.2f} dB)의 1.5배를 넘는 리스트. "
+                   "제외하지 않고 표시만 합니다(⑦ 최종 리스트 규칙 ③).")
+
+# ============================================================
+# ⑦ 최종 리스트
+# ============================================================
+fd = U.final_decision(cells)
+with tabs[6]:
+    st.markdown("최종 리스트는 아래 규칙으로 정합니다. 규칙은 코드에 고정되어 있고 데이터가 들어오면 자동으로 다시 판정합니다.")
+    for line in U.FINAL_RULE:
+        st.markdown(f"- {line}")
+
+    label = "최종" if stg["final"] else "잠정"
+    st.subheader(f"{'✅' if stg['final'] else '⏳'} {label} 결과: {len(fd['final_lists'])}개 리스트")
+    st.markdown(f"**{', '.join(map(str, fd['final_lists']))}**")
+    if fd["confirmed"]:
+        st.write(f"제외: 리스트 {', '.join(map(str, fd['confirmed']))} (1차·2차 모두 제외 후보)")
+
+    rows = [{
+        "단계": "① 1차 제외 후보", "결과": ", ".join(f"리스트 {l}" for l in fd["cand"]) or "없음 (13개 모두 통과)",
+        "설명": f"1차 {len(m1)}명",
+    }]
+    if fd["ready2"]:
+        rows.append({"단계": "② 2차에서도 후보인가", "결과": ", ".join(f"리스트 {l}" for l in fd["cand2"]) or "2차에서는 후보 없음",
+                     "설명": f"2차 {fd['n2']}명 · 최종 제외 = 1차·2차 공통 후보: "
+                             + (", ".join(map(str, fd["confirmed"])) or "없음")})
+    else:
+        rows.append({"단계": "② 2차에서도 후보인가", "결과": "판정 대기",
+                     "설명": f"2차 {fd['n2']}명 — {U.MIN_N_RETEST}명 이상이면 계산"})
+    rows.append({"단계": "③ 들쭉날쭉한 리스트(표시만)",
+                 "결과": ", ".join(f"리스트 {l}" for l in fd["unstable"]) or ("없음" if rt["ready"] else "판정 대기"),
+                 "설명": "제외하지 않음"})
+    rows.append({"단계": "④ 최소 개수", "결과": f"{len(fd['final_lists'])}개 (≥ {U.MIN_LISTS})", "설명": ""})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    st.subheader("최종 리스트 세트의 동등성 확인")
+    chk = []
+    for name, e in [("1차", fd["eq1"]), ("2차", fd["eq2"])]:
+        if e is None:
+            chk.append({"회차": name, "인원": "—", "리스트 간 SD": "—", "리스트 효과 p": "—", "판정": "판정 대기"})
+        else:
+            chk.append({"회차": name, "인원": f"{e['n']}명", "리스트 간 SD": f"{e['between_sd']:.2f} dB",
+                        "리스트 효과 p": p_fmt(e["anova"]["p_gg"]), "판정": "✅ 통과" if e["passed"] else "❌ 미달"})
+    st.dataframe(pd.DataFrame(chk), hide_index=True, width="stretch")
+    if not stg["final"]:
+        st.caption("⏳ 2차가 끝나기 전까지는 잠정 결과입니다. 1차만으로는 리스트를 제외하지 않습니다.")
+
+# ============================================================
 # 다운로드
 # ============================================================
 CODEBOOK = pd.DataFrame([
@@ -267,6 +388,9 @@ CODEBOOK = pd.DataFrame([
     ("exp4_status.csv", "—", "참가자별 1차·2차 날짜, 2차 기한, 상태"),
     ("exp4_list_stats_round1.csv", "mean, sd, ci, dev", "1차 리스트별 평균·참가자 간 SD·95% CI 반폭·전체 평균과 차이(dB)"),
     ("exp4_norm.csv", "—", "정상 기준 계산(A, B, 사용 값, 참고용 정상 상한)"),
+    ("exp4_retest_summary.csv", "icc, lo, hi, sem, cd95", "검사-재검사 요약(13개 평균 / 리스트 1개). 2차 5명 이상일 때만"),
+    ("exp4_retest_by_list.csv", "diff_sd, unstable", "리스트별 1차·2차 비교, 들쭉날쭉 표시"),
+    ("exp4_final_lists.csv", "final, *_candidate", "최종 리스트 판정(1차·2차 제외 후보, 최종 포함 여부)"),
 ], columns=["파일", "열", "설명"])
 
 
@@ -289,6 +413,18 @@ def build_zip() -> bytes:
         if nv_:
             put("exp4_norm.csv", pd.DataFrame([{k: nv_[k] for k in ("n", "A", "A_sd", "B", "B_sd", "diff", "use",
                                                                       "value", "value_rounded", "sd", "upper")}]).round(4))
+        if rt["ready"]:
+            put("exp4_retest_summary.csv", pd.DataFrame([
+                {"level": "13개 리스트 평균", **{k: rt["mean_level"][k] for k in
+                                            ("n", "icc", "lo", "hi", "sem", "cd95", "diff_mean", "diff_sd", "p")}},
+                {"level": "리스트 1개", "n": rt["n"], "icc": rt["single"]["icc_mean"], "sem": rt["single"]["sem"],
+                 "cd95": rt["single"]["cd95"], "diff_mean": rt["single"]["diff_mean"]},
+            ]).round(4))
+            put("exp4_retest_by_list.csv", rt["per_list"].round(4))
+        put("exp4_final_lists.csv", pd.DataFrame({
+            "list_no": U.LISTS, "final": [l in fd["final_lists"] for l in U.LISTS],
+            "round1_candidate": [l in fd["cand"] for l in U.LISTS], "round2_candidate": [l in fd["cand2"] for l in U.LISTS],
+            "unstable_flag": [l in fd["unstable"] for l in U.LISTS], "status": "최종" if stg["final"] else "잠정"}))
         put("codebook.csv", CODEBOOK)
         z.writestr("README.txt", (
             "Quick-SIN 한국어판 실험 4 데이터\n"
@@ -302,7 +438,7 @@ def build_zip() -> bytes:
     return buf.getvalue()
 
 
-with tabs[5]:
+with tabs[7]:
     st.markdown(
         "엑셀에서 바로 열 수 있는 CSV 파일 묶음(ZIP)입니다. **이름 등 개인정보는 없고 참가자 번호만 있습니다.** "
         "검사 문장 원문은 검사 자료 보호를 위해 빼고 문장 번호만 넣었습니다. "
